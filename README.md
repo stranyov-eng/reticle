@@ -7,6 +7,21 @@ rate, jitter and how long an address has been silent.
 Supports OSC, sACN (E1.31) with a DMX channel grid, raw UDP for diagnostics, and
 an HTTP client for poking REST endpoints.
 
+## Download
+
+Windows x64, version 0.1.0:
+
+| | |
+|---|---|
+| [**Reticle_0.1.0_x64-setup.exe**](Reticle_0.1.0_x64-setup.exe?raw=1) | Installer, 3.6 MB — the usual choice |
+| [**Reticle_0.1.0_x64_en-US.msi**](Reticle_0.1.0_x64_en-US.msi?raw=1) | MSI, 5.0 MB — for policy deployment |
+
+The build is unsigned, so on first launch Windows shows SmartScreen: click
+**More info** → **Run anyway**. WebView2 is required and ships with Windows 10
+and 11, so in practice nothing else is needed.
+
+macOS and Linux builds are not published yet — see the roadmap.
+
 ## Why not just use Protokol
 
 Protokol's main view is a message log. That answers "what arrived just now".
@@ -94,7 +109,7 @@ checkbox.
 Note: exported presets carry headers verbatim, `Authorization` included. Check
 before sharing.
 
-## Running
+## Building from source
 
 ```bash
 npm install
