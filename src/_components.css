@@ -1,0 +1,206 @@
+/*
+  Shared component layer for the stranyov.pro tools.
+  ----------------------------------------------------------------------------
+  These are UI primitives that were copy-pasted (byte-for-byte) across the
+  canvas tools. Extracting them here keeps every tool visually in sync and
+  stops the slow drift between copies. Load AFTER _tokens.css so the tokens
+  (--paper / --ink / --dim / --card-border …) are already defined, and BEFORE
+  each tool's own inline <style> so a tool can still override a value locally.
+
+  Where copies genuinely differed for a reason (e.g. the generator's toast
+  sits above its bottom panel), the difference is exposed as a CSS variable
+  with a sensible default — the tool sets the variable, the rule stays shared.
+*/
+
+/* ── desktop-only gate: tool needs a mouse + a wide canvas ── */
+.desktop-gate{display:none;}
+@media (max-width:820px){
+  body>*:not(.desktop-gate){display:none!important;}
+  .desktop-gate{display:flex;position:fixed;inset:0;z-index:99999;background:var(--paper);color:var(--ink);align-items:center;justify-content:center;padding:32px;text-align:center;}
+  .desktop-gate .dg-in{max-width:400px;}
+  .desktop-gate .dg-icon{width:54px;height:auto;color:var(--dimmer);margin-bottom:22px;}
+  .desktop-gate .dg-eyebrow{font-family:var(--font);font-size:11px;letter-spacing:0.2em;text-transform:uppercase;color:var(--dimmer);margin-bottom:14px;}
+  .desktop-gate .dg-title{font-family:var(--font);font-weight:700;font-size:30px;letter-spacing:0.02em;color:var(--ink);line-height:1.05;margin-bottom:14px;}
+  .desktop-gate .dg-text{font-family:var(--font);font-size:13px;line-height:1.65;color:var(--dim);margin-bottom:26px;}
+  .desktop-gate .dg-back{font-family:var(--font);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--accent);border-bottom:1px solid var(--card-border);padding-bottom:3px;text-decoration:none;}
+}
+
+/* ── tooltip bubble (hover hints on canvas controls) ── */
+.tooltip-bubble {
+  position: fixed;
+  background: var(--panel);
+  border: 1px solid var(--card-border);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 10px; letter-spacing: 0.05em; line-height: 1.45;
+  padding: 6px 10px;
+  max-width: 280px;
+  pointer-events: none;
+  z-index: 10000;
+  opacity: 0;
+  transition: opacity 0.15s;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  white-space: normal;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+}
+.tooltip-bubble.show { opacity: 1; }
+
+/* ── zoom badge (current canvas zoom %, top-right of the viewport) ── */
+.zoom-badge {
+  position: absolute; top: 12px; right: 14px;
+  font-family: inherit; font-size: 9px; letter-spacing: 0.1em;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--panel) 85%, transparent);
+  border: 1px solid var(--card-border);
+  padding: 4px 9px;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  display: none;
+  z-index: 5;
+}
+.zoom-badge.show { display: block; }
+
+/* ── toast notification (bottom-centre). A tool sets --notif-bottom / --notif-z
+      when it needs the toast to clear a panel or sit on a different layer. ── */
+.notif {
+  position: fixed; bottom: var(--notif-bottom, 18px); left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  /* solid dark-invariant chrome (was translucent; the canvas tools each overrode it
+     locally — promoted here so every tool, incl. uv-gen, gets the same solid toast). */
+  background: var(--panel);
+  border: 1px solid var(--card-border);
+  color: var(--ink);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase;
+  padding: 8px 16px;
+  opacity: 0; transition: opacity 0.25s, transform 0.25s;
+  z-index: var(--notif-z, 100);
+}
+.notif.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ── export-button family ── Every file-producing button is dimmed at rest and
+   lights up on hover, so the export cluster reads as one group. Two markers,
+   layered on a tool's own base button class for sizing:
+     .btn-export-hero — the ONE headline export per tool: solid --action.
+     .btn-export      — its siblings: an --action outline that fills on hover.
+   A positive hero marker (not :not(.btn-primary)) avoids depending on the
+   .btn-primary vs .btn.primary class split across tools. Element-qualified so
+   these win over a tool's single-class .btn-secondary defined later inline.
+   Non-export actions (Import, Save preset/config, Snap, Clear) stay neutral. */
+button.btn-export, button.btn-export-hero {
+  opacity: 0.72;
+  transition: opacity .15s, background .15s, border-color .15s, color .15s;
+}
+button.btn-export:hover:not(:disabled), button.btn-export-hero:hover:not(:disabled) { opacity: 1; }
+button.btn-export { background: none; border: 1px solid var(--action); color: var(--action); }
+button.btn-export:hover:not(:disabled) { background: var(--action); border-color: var(--action); color: var(--action-tx); }
+button.btn-export-hero { background: var(--action); border: 1px solid var(--action); color: var(--action-tx); }
+
+/* ── drop hint ── The "drop a file here" overlay shown over an empty canvas
+   (planner / detector). Identical in both, so it lives here; a tool may still
+   override e.g. font-size in its own riso block. */
+.drop-hint {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: var(--dim); font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase;
+  pointer-events: none;
+  gap: 8px;
+}
+.drop-hint .big { font-size: 60px; opacity: 0.15; margin-bottom: 12px; }
+.drop-hint.hidden { display: none; }
+
+/* ── version chip ── Shared topbar version + up-to-date dot, next to the tool
+   title/stage badge. _theme-toggle.js fills v<semver> from version.json and sets
+   data-state (ok/stale/unknown) from the build-hash comparison. Starts hidden so it
+   never flashes an empty chip; the explicit [hidden] rule beats the inline-flex. */
+.topbar-ver {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em;
+  color: var(--dimmer); text-transform: uppercase; white-space: nowrap;
+}
+.topbar-ver .ver-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: var(--line2); transition: background .2s;
+}
+.topbar-ver[data-state="ok"]    .ver-dot { background: #3fb950; }
+.topbar-ver[data-state="stale"] .ver-dot { background: #d29922; }
+.topbar-ver[hidden] { display: none; }
+
+/* ── modal overlay (dims + centres a dialog; the tool adds .open to reveal).
+      Note: ltc-gen uses its own compact-card modal system and does NOT load
+      this file, so it is unaffected. ── */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.75);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.2s;
+}
+.modal-overlay.open { opacity: 1; pointer-events: all; }
+
+/* ── About → knowledge-base modal (the "?" / About panel + its video clips).
+      Shared by slice-planner + slice-detector (identical rules). generator
+      keeps its own slightly-wider variant inline (modal 1040 / lead 680), whose
+      complete inline rules override these. Custom props like --surface / --white
+      resolve from each tool's inline :root at use time. ── */
+.modal.modal-kb { width: min(1000px, 96vw); }
+.kb-eyebrow { font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--frame-active); margin-bottom: 4px; }
+.kb-lead { font-size: 12.5px; line-height: 1.6; color: var(--dim); max-width: 660px; }
+.kb-grid2 { display: grid; grid-template-columns: 186px 1fr; gap: 24px; align-items: start; }
+.kb-nav { position: sticky; top: 0; align-self: start; }
+.kb-nav .grp { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--dimmer); margin: 14px 6px 5px; }
+.kb-nav .grp:first-child { margin-top: 0; }
+.kb-nav a { display: block; font-size: 11.5px; color: var(--dim); padding: 5px 7px; border-left: 2px solid transparent; border-radius: 2px; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+.kb-nav a:hover { color: var(--white); background: rgba(var(--ink-rgb),0.05); }
+.kb-nav a.active { color: var(--frame-active); border-left-color: var(--frame-active); }
+.kb-nav a.reflink { margin-top: 2px; }
+.kb-sec-title { font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--dimmer); margin: 26px 0 12px; }
+.kb-content > .kb-sec-title:first-child { margin-top: 0; }
+.kb-hero { display: grid; grid-template-columns: 1.35fr 1fr; gap: 18px; align-items: center; margin-bottom: 4px; }
+.kb-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.kb-feat .kb-meta { margin-top: 9px; }
+.kb-clip { position: relative; aspect-ratio: 16/10; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line2); cursor: zoom-in; background: var(--input-bg); transition: border-color .15s, transform .15s; }
+.kb-clip:hover { border-color: var(--frame-active); transform: translateY(-2px); }
+.kb-vid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.kb-clip .play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; transition: opacity .15s; }
+.kb-clip .play span { width: 40px; height: 40px; border-radius: 50%; background: rgba(var(--paper-rgb),0.72); border: 1px solid var(--card-border); display: flex; align-items: center; justify-content: center; color: var(--ink); font-size: 13px; padding-left: 2px; transition: background .15s, color .15s, transform .15s; }
+.kb-clip:hover .play span { background: var(--frame-active); color: var(--paper); transform: scale(1.08); }
+.kb-clip .dur { position: absolute; bottom: 7px; right: 7px; font-family: var(--mono); font-size: 9px; color: var(--ink); background: rgba(var(--paper-rgb),0.7); border-radius: 2px; padding: 1px 5px; transition: opacity .15s; }
+.kb-clip.playing .play, .kb-clip.playing .dur { opacity: 0; }
+.kb-meta h3 { font-size: 13px; font-weight: var(--fw-bold); color: var(--white); margin-bottom: 5px; display: flex; align-items: center; gap: 8px; letter-spacing: 0.01em; }
+.kb-meta p { font-size: 12px; line-height: 1.5; color: var(--dim); }
+.kb-hero .kb-meta h3 { font-size: 15px; }
+.kb-key { font-family: var(--mono); font-size: 10px; color: var(--frame-active); border: 1px solid var(--frame-active); border-radius: 3px; padding: 1px 6px; }
+.kb-ref { display: flex; flex-direction: column; gap: 8px; }
+.kb-ref-row { display: grid; grid-template-columns: 158px 1fr; gap: 14px; align-items: baseline; }
+.kb-k { font-family: var(--mono); font-size: 10.5px; color: var(--white); background: rgba(var(--ink-rgb),0.06); border: 1px solid var(--line2); border-radius: 2px; padding: 3px 8px; text-align: center; white-space: nowrap; }
+.kb-v { font-size: 12px; line-height: 1.5; color: var(--dim); }
+.kb-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 2000; padding: 4vmin; }
+.kb-lightbox.open { display: flex; }
+.kb-lightbox video { max-width: 92vw; max-height: 88vh; border: 1px solid var(--card-border); border-radius: var(--radius); box-shadow: 6px 6px 0 var(--action); background: #000; }
+.kb-lightbox .lb-close { position: absolute; top: 18px; right: 22px; width: 34px; height: 34px; border: 1px solid var(--line2); border-radius: var(--radius); background: var(--surface); color: var(--white); cursor: pointer; font-size: 14px; }
+
+/* Version-history popup (_changelog.js) — opened from the [data-tool-version] version badge */
+.has-changelog { cursor: pointer; }
+.changelog-list { display: flex; flex-direction: column; gap: 18px; }
+.changelog-vrow { display: flex; align-items: baseline; gap: 10px; margin-bottom: 7px; }
+.changelog-ver { font-family: var(--mono); font-weight: var(--fw-bold); font-size: var(--fs-title); color: var(--frame-active); letter-spacing: 0.02em; }
+.changelog-date { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.changelog-notes { list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.changelog-notes li { position: relative; padding-left: 15px; font-size: var(--fs-body); line-height: 1.5; color: var(--ink); }
+.changelog-notes li::before { content: '—'; position: absolute; left: 0; color: var(--dim); }
+.changelog-empty { font-size: var(--fs-body); color: var(--dim); }
+
+/* Shared confirm modal (confirmModal in _util.js) — self-contained buttons so it looks the same
+   in every tool regardless of each tool's own .btn-* classes */
+.confirm-body { padding: 18px 24px 6px; }
+.confirm-msg { font-size: var(--fs-body); line-height: 1.55; color: var(--dim); white-space: pre-line; margin: 0; }
+.confirm-actions { display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 24px 22px; }
+.confirm-btn { width: auto; padding: 7px 16px; border-radius: var(--radius); font-family: var(--mono); font-size: var(--fs-label); letter-spacing: 0.03em; cursor: pointer; border: 1px solid var(--line2); background: none; color: var(--dim); transition: color .15s, border-color .15s, background .15s; }
+.confirm-btn:hover { color: var(--white); border-color: var(--line2); }
+.confirm-btn.confirm-primary { border-color: var(--frame-active); color: var(--frame-active); }
+.confirm-btn.confirm-primary:hover { color: var(--white); background: color-mix(in srgb, var(--frame-active) 16%, transparent); }
+.confirm-btn.confirm-danger { border-color: var(--danger); color: var(--danger); }
+.confirm-btn.confirm-danger:hover { color: var(--white); background: color-mix(in srgb, var(--danger) 16%, transparent); }

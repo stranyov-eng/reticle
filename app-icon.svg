@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Reticle icon.
+       The visual language comes from the STRANYOV logo: a dark rounded square
+       and the signature horizontal line that strikes through the S there.
+       Instead of a letter this carries a reticle — literally what the name
+       means. Colours are from the night theme in tokens.css: background as in
+       the logo, mark in ink, centre dot in frame-active. -->
+
+  <rect width="1024" height="1024" rx="128" fill="#0a0a0a"/>
+
+  <line x1="300" y1="250" x2="724" y2="250"
+        stroke="#efe6d2" stroke-width="56" stroke-linecap="round"/>
+
+  <g stroke="#efe6d2" fill="none" stroke-linecap="round">
+    <circle cx="512" cy="620" r="215" stroke-width="34"/>
+
+    <!-- the crosshair is broken near the centre, as on a real sight, so the
+         centre dot stays visible -->
+    <g stroke-width="30">
+      <line x1="182" y1="620" x2="412" y2="620"/>
+      <line x1="612" y1="620" x2="842" y2="620"/>
+      <line x1="512" y1="320" x2="512" y2="520"/>
+      <line x1="512" y1="720" x2="512" y2="920"/>
+    </g>
+  </g>
+
+  <circle cx="512" cy="620" r="30" fill="#ffd06b"/>
+</svg>

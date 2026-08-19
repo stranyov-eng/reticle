@@ -1,0 +1,105 @@
+/* ==========================================================================
+   STRANYOV.PRO — design TOKENS (single source of truth)
+   Colors, typography scale, radius, fonts, day/night, theme-switch widget.
+   Linked by every tool (generator/detector/planner) AND by _theme.css.
+   ========================================================================== */
+
+@font-face { font-family: 'Bricolage Grotesque'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/bricolage-grotesque-400.woff2') format('woff2'); }
+@font-face { font-family: 'Bricolage Grotesque'; font-style: normal; font-weight: 500; font-display: swap; src: url('fonts/bricolage-grotesque-500.woff2') format('woff2'); }
+@font-face { font-family: 'Bricolage Grotesque'; font-style: normal; font-weight: 700; font-display: swap; src: url('fonts/bricolage-grotesque-700.woff2') format('woff2'); }
+@font-face { font-family: 'Space Grotesk'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/space-grotesk-400.woff2') format('woff2'); }
+@font-face { font-family: 'Space Grotesk'; font-style: normal; font-weight: 500; font-display: swap; src: url('fonts/space-grotesk-500.woff2') format('woff2'); }
+@font-face { font-family: 'Space Grotesk'; font-style: normal; font-weight: 700; font-display: swap; src: url('fonts/space-grotesk-700.woff2') format('woff2'); }
+
+:root{
+  /* ---- color tokens (day = R-1) ---- */
+  --paper:#d3c6a4; --panel:#dacfb0; --panel2:#c8ba97;
+  --ink:#2a2620; --dim:rgba(42,38,32,0.65); --dimmer:rgba(42,38,32,0.35);
+  --line:rgba(42,38,32,0.14); --line2:rgba(42,38,32,0.24);
+  --card-border:#1f7a6c; --input-bg:#ece3cd;
+  --accent:#1f7a6c; --accent-tx:#eef7f4;
+  --action:#e8622c; --action-tx:#2a1608;
+  --danger:#c8493a; --danger-tx:#fff;   /* readable label on a filled --danger button */
+  --frame-active:#1f7a6c;   /* hover/active outline of a slice frame on canvas (detector/planner) */
+  --white:var(--ink);       /* "ink-on-paper" max-contrast text; shared so tools (esp. uv-gen) don't each redeclare it */
+  --radius:3px;
+  --grain-color:rgba(42,38,32,0.35); --grain-blend:multiply; --grain-op:0.5;
+  /* rgb helpers — so legacy hardcoded rgba(ink,alpha) literals in the tools can be rebased theme-aware */
+  --ink-rgb:42,38,32; --accent-rgb:31,122,108; --action-rgb:232,98,44;
+  /* site helpers (index.html): paper as rgb for translucent surfaces, seam = section blend colour, riso-screen = halftone dot colour */
+  --paper-rgb:211,198,164; --seam-rgb:211,198,164; --riso-screen:rgba(211,198,164,0.6);
+
+  /* ---- typography ---- */
+  --font:'Bricolage Grotesque', sans-serif;
+  --mono:ui-monospace, 'DM Mono', 'SF Mono', Menlo, Consolas, monospace;  /* theme-independent monospace — shared so tools/components don't redeclare it */
+  --fw-regular:400; --fw-medium:500; --fw-bold:700;
+  --fs-display:18px;   /* modal-title, big page headings */
+  --fs-title:14px;     /* topbar-title, entity names (slice-name, assign-name), modal-card-title */
+  --fs-label:11px;     /* uppercase tracked ui labels: bg-lbl/s-lbl, panel-title, mode-tab, dims group/lbl */
+  --fs-sublabel:10px;  /* secondary text under a label: preset-sub, tools-dd-desc, drop-hint-sub */
+  --fs-body:11px;      /* prose: modal-card-body, modal-tip-val, empty-state */
+  --fs-button:10px;    /* button text */
+  --fs-input:10px;     /* input field text */
+  --fs-badge:10px;     /* small pills: badge, topbar-badge, slice-badge */
+  --tk-label:0.06em;   /* letter-spacing for uppercase labels */
+  --tk-display:0.01em;
+}
+[data-theme="night"]{
+  /* ---- color tokens (night = G-2) ---- */
+  --paper:#0f0f0f; --panel:#252526; --panel2:#2c2c2d;
+  --ink:#efe6d2; --dim:rgba(239,230,210,0.5); --dimmer:rgba(239,230,210,0.28);
+  --line:rgba(239,230,210,0.12); --line2:rgba(239,230,210,0.2);
+  --card-border:rgba(239,230,210,0.55); --input-bg:#161617;
+  --accent:#efe6d2; --accent-tx:#1e1e1f;
+  --action:#efe6d2; --action-tx:#1e1e1f;
+  --danger:#ff6b7a; --danger-tx:#1e1e1f;   /* readable label on a filled --danger button */
+  --frame-active:#ffd06b;   /* hover/active outline of a slice frame on canvas */
+  --grain-color:rgba(255,255,255,0.5); --grain-blend:screen; --grain-op:0.06;
+  --ink-rgb:239,230,210; --accent-rgb:239,230,210; --action-rgb:239,230,210;
+  --paper-rgb:15,15,15; --seam-rgb:15,15,15; --riso-screen:rgba(10,10,10,0.55);
+}
+
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);transition:background .35s ease,color .35s ease;}
+body{font-family:var(--font);font-weight:var(--fw-regular);font-size:12px;letter-spacing:0.01em;}
+a{color:inherit;text-decoration:none;}
+button{font-family:inherit;}
+
+/* ============ SHARED A11Y BASELINE (all tools load _tokens.css, incl. ltc) ============ */
+/* Visible keyboard focus. The tools pervasively set outline:none on :focus, so the ring
+   is !important to win — but only for :focus-visible, so mouse clicks never show it. */
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex]:focus-visible,.theme-switch:focus-visible{
+  outline:2px solid var(--frame-active) !important;
+  outline-offset:2px;
+}
+/* The tool title is an <h1> for document structure; kill the UA heading margin so it
+   still sits centred in the flex topbar (per-tool .topbar-title rules set the type). */
+.topbar-title { margin: 0; }
+/* Respect reduced-motion everywhere (was only honoured on the hub before). */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:0.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:0.01ms !important;
+    scroll-behavior:auto !important;
+  }
+}
+
+/* ============ SHARED RANGE SLIDER (theme-tied, identical across all tools) ============ */
+input[type="range"]{-webkit-appearance:none;appearance:none;width:100%;height:2px;outline:none;border-radius:0;cursor:pointer;background:rgba(var(--ink-rgb),0.22);transition:background .15s ease;}
+input[type="range"]:hover{background:rgba(var(--ink-rgb),0.32);}
+input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:11px;height:11px;border:none;border-radius:50%;background:var(--ink);cursor:pointer;transition:transform .15s ease,background .15s ease;}
+input[type="range"]::-moz-range-thumb{width:11px;height:11px;border:none;border-radius:50%;background:var(--ink);cursor:pointer;transition:transform .15s ease,background .15s ease;}
+input[type="range"]::-moz-range-track{height:2px;background:rgba(var(--ink-rgb),0.22);}
+input[type="range"]::-webkit-slider-thumb:hover{transform:scale(1.3);}
+input[type="range"]:hover::-webkit-slider-thumb{background:var(--frame-active);}
+input[type="range"]:hover::-moz-range-thumb{background:var(--frame-active);transform:scale(1.3);}
+
+/* ============ SHARED THEME TOGGLE (markup: .theme-toggle > #themeLabel + #themeSwitch) ============ */
+.theme-toggle{display:flex;align-items:center;gap:10px;font-family:var(--font);font-size:var(--fs-label);text-transform:uppercase;letter-spacing:var(--tk-label);color:var(--dim);}
+.theme-switch{position:relative;width:46px;height:25px;border-radius:13px;border:1.5px solid var(--card-border);background:var(--panel2);cursor:pointer;flex:none;transition:background .35s ease,border-color .35s ease;}
+.theme-switch::before{content:'☀\00FE0E';position:absolute;top:1.5px;left:2px;width:19px;height:19px;border-radius:50%;background:var(--action);color:var(--action-tx);display:flex;align-items:center;justify-content:center;font-size:10px;transition:transform .3s ease,background .35s ease;}
+/* ☀/☾ carry a VS15 text-presentation selector (\FE0E) so iOS Safari draws them as
+   plain glyphs instead of full-colour emoji — CSS ::before content can't be reached by
+   the JS glyph-fixer, so the selector has to live in the content string itself. */
+[data-theme="night"] .theme-switch::before{content:'☾\00FE0E';transform:translateX(20px);}

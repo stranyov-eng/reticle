@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="night">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reticle</title>
+  <!-- UI size is applied before styles, otherwise the first frame flashes at the wrong scale -->
+  <script>document.documentElement.dataset.size = localStorage.getItem('reticle-ui-size') || 'm';</script>
+  <link rel="stylesheet" href="_tokens.css" />
+  <link rel="stylesheet" href="_components.css" />
+  <link rel="stylesheet" href="app.css" />
+  <script src="_theme.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">RETICLE</div>
+
+    <div class="src-strip" id="srcStrip"></div>
+
+    <button class="btn" id="addSrcBtn" data-i18n="addSource">+ source</button>
+
+    <div class="grow"></div>
+
+    <label class="size-pick">
+      <span data-i18n="uiSize">Size</span>
+      <select id="uiSize">
+        <option value="s" data-i18n="sizeS">Small</option>
+        <option value="m" data-i18n="sizeM">Medium</option>
+        <option value="l" data-i18n="sizeL">Large</option>
+      </select>
+    </label>
+
+    <button class="btn" id="pauseBtn" data-i18n="pause" data-i18n-title="pauseHint" title="Freeze the view — capture keeps running">Pause</button>
+    <button class="btn" id="resetBtn" data-i18n="reset" data-i18n-title="resetHint" title="Clear all statistics">Reset</button>
+    <div class="theme-switch" id="themeSwitch" title="Theme"><span id="themeLabel">◐</span></div>
+  </header>
+
+  <form class="src-form" id="srcForm" hidden>
+    <label><span data-i18n="protocol">Protocol</span>
+      <select id="fKind">
+        <option value="osc-udp">OSC / UDP</option>
+        <option value="sacn">sACN (E1.31)</option>
+        <option value="raw-udp" data-i18n="rawUdp">Raw UDP (hex)</option>
+      </select>
+    </label>
+    <label><span data-i18n="port">Port</span> <input type="number" id="fPort" value="9000" min="1" max="65535" /></label>
+    <label id="fUniversesRow" hidden><span data-i18n="universes">Universes</span> <input type="text" id="fUniverses" value="1-4" placeholder="1-4,10" /></label>
+    <label><span data-i18n="interface">Interface</span> <input type="text" id="fBind" value="0.0.0.0" /></label>
+    <label id="fMulticastRow"><span data-i18n="multicast">Multicast</span> <input type="text" id="fMulticast" data-i18n-placeholder="multicastNone" placeholder="none" /></label>
+    <button class="btn btn-action" type="submit" data-i18n="listen">Listen</button>
+    <button class="btn" type="button" id="srcCancel" data-i18n="cancel">Cancel</button>
+    <span class="src-err" id="srcErr"></span>
+  </form>
+
+  <nav class="tabs">
+    <button class="tab is-active" data-tab="addrs" data-i18n="tabAddresses">Addresses</button>
+    <button class="tab" data-tab="dmx" data-i18n="tabDmx">DMX</button>
+    <button class="tab" data-tab="log" data-i18n="tabLog">Log</button>
+    <button class="tab" data-tab="http" data-i18n="tabHttp">HTTP</button>
+    <div class="grow"></div>
+    <label class="filter"><span data-i18n="filter">Filter</span> <input type="text" id="filter" data-i18n-placeholder="filterHint" placeholder="/cue or part of an address" /></label>
+    <span class="stat-note" id="statNote"></span>
+  </nav>
+
+  <main class="view is-active" id="view-addrs">
+    <table class="addr-table">
+      <thead>
+        <tr>
+          <th class="col-src" data-i18n="colSrc">src</th>
+          <th class="col-path" data-i18n="colAddress">address</th>
+          <th class="col-type" data-i18n="colType">type</th>
+          <th class="num" data-i18n="colValue">value</th>
+          <th class="num" data-i18n="colMin">min</th>
+          <th class="num" data-i18n="colMax">max</th>
+          <th class="num" data-i18n="colAvg">avg</th>
+          <th class="num" data-i18n="colHz">hz</th>
+          <th class="num" data-i18n="colCount">count</th>
+          <th class="num" data-i18n="colDt" data-i18n-title="colDtHint" title="interval between messages: average (min–max)">Δt, ms</th>
+          <th class="num" data-i18n="colSilence" data-i18n-title="colSilenceHint" title="how long this address has been quiet">silence</th>
+        </tr>
+      </thead>
+      <tbody id="addrBody"></tbody>
+    </table>
+    <div class="empty" id="emptyState">
+      <p data-i18n="emptyTitle">No ports are being listened to.</p>
+      <button class="btn btn-action" id="quickStart" data-i18n="quickStart">Listen for OSC on 9000</button>
+    </div>
+  </main>
+
+  <main class="view" id="view-dmx">
+    <div class="uni-strip" id="uniStrip"></div>
+    <div class="dmx-meta" id="dmxMeta"></div>
+    <div class="ch-grid" id="chGrid"></div>
+    <div class="empty" id="dmxEmpty">
+      <p data-i18n="dmxEmptyTitle">No sACN universes seen yet.</p>
+      <button class="btn btn-action" id="dmxQuickStart" data-i18n="dmxQuickStart">Listen to sACN universes 1–4</button>
+    </div>
+  </main>
+
+  <main class="view" id="view-log">
+    <div class="log" id="logBody"></div>
+  </main>
+
+  <main class="view" id="view-http">
+    <form class="http-bar" id="httpForm">
+      <select id="hMethod">
+        <option>GET</option>
+        <option>POST</option>
+        <option>PUT</option>
+        <option>PATCH</option>
+        <option>DELETE</option>
+        <option>HEAD</option>
+        <option>OPTIONS</option>
+      </select>
+      <input type="text" id="hUrl" placeholder="http://localhost:8080/api/status" spellcheck="false" />
+      <button class="btn btn-action" type="submit" id="hSend" data-i18n="send">Send</button>
+      <label class="chk"><input type="checkbox" id="hInsecure" /> <span data-i18n="insecure">Ignore TLS errors</span></label>
+    </form>
+
+    <div class="preset-bar">
+      <div class="presets" id="presetStrip"></div>
+      <input type="text" id="presetName" data-i18n-placeholder="presetNameHint" placeholder="preset name" />
+      <button class="btn" type="button" id="presetSave" data-i18n="savePreset">Save</button>
+      <button class="btn" type="button" id="presetExport" data-i18n="exportPresets">Export</button>
+      <button class="btn" type="button" id="presetImport" data-i18n="importPresets">Import</button>
+      <span class="save-note" id="presetNote"></span>
+    </div>
+
+    <details class="history-bar" id="historyBar">
+      <summary><span data-i18n="history">History</span> <span class="hist-count" id="histCount"></span></summary>
+      <div class="history-list" id="historyList"></div>
+    </details>
+
+    <div class="http-panes">
+      <label class="pane">
+        <span class="pane-label" data-i18n="headers">Headers — one per line, "Name: value"</span>
+        <textarea id="hHeaders" spellcheck="false" placeholder="Accept: application/json"></textarea>
+      </label>
+      <label class="pane">
+        <span class="pane-label" data-i18n="bodyLabel">Body</span>
+        <textarea id="hBody" spellcheck="false" placeholder='{ "cue": 12 }'></textarea>
+      </label>
+    </div>
+
+    <div class="http-result" id="hResult" hidden>
+      <div class="http-status" id="hStatus"></div>
+      <div class="http-actions" id="hActions" hidden>
+        <button class="btn" type="button" id="hSave" data-i18n="saveResponse">Save response</button>
+        <button class="btn" type="button" id="hCopy" data-i18n="copyBody">Copy body</button>
+        <span class="save-note" id="hSaveNote"></span>
+      </div>
+      <details id="hHeadersOut">
+        <summary data-i18n="responseHeaders">Response headers</summary>
+        <pre id="hHeadersBody"></pre>
+      </details>
+      <pre class="http-body" id="hBodyOut"></pre>
+    </div>
+  </main>
+
+  <footer class="statusbar">
+    <span id="sbAddrs">0 addresses</span>
+    <span id="sbRate"></span>
+    <span id="sbDropped"></span>
+    <div class="grow"></div>
+    <span class="hint" data-i18n="portHint">A UDP port has one listener at a time — while Reticle holds it, the intended receiver will not see it.</span>
+  </footer>
+
+
+  <script src="app.js"></script>
+</body>
+</html>
