@@ -9,12 +9,14 @@ an HTTP client for poking REST endpoints.
 
 ## Download
 
-Windows x64, version 0.1.0:
+**[Latest release →](https://github.com/stranyov-eng/reticle/releases/latest)**
+
+Windows x64:
 
 | | |
 |---|---|
-| [**Reticle_0.1.0_x64-setup.exe**](Reticle_0.1.0_x64-setup.exe?raw=1) | Installer, 3.6 MB — the usual choice |
-| [**Reticle_0.1.0_x64_en-US.msi**](Reticle_0.1.0_x64_en-US.msi?raw=1) | MSI, 5.0 MB — for policy deployment |
+| `Reticle_x.y.z_x64-setup.exe` | Installer, ~3.6 MB — the usual choice |
+| `Reticle_x.y.z_x64_en-US.msi` | MSI, ~5 MB — for policy deployment |
 
 The build is unsigned, so on first launch Windows shows SmartScreen: click
 **More info** → **Run anyway**. WebView2 is required and ships with Windows 10

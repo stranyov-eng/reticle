@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Build artefacts: they belong in Releases, not in git history
+*.exe
+*.msi
+*.dmg
+*.AppImage
+*.deb
