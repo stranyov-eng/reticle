@@ -143,6 +143,34 @@ async fn get_spark(
     Ok(inner.agg.spark(source_id, &path, slot))
 }
 
+#[derive(serde::Deserialize)]
+struct SparkRequest {
+    source_id: u32,
+    path: String,
+    slot: usize,
+}
+
+/// How many sparklines one call may ask for. Beyond that the table is far past
+/// what a person reads anyway, and the payload stops being cheap.
+const MAX_SPARKS: usize = 256;
+
+/// Value history for many slots at once.
+///
+/// Batched deliberately: asking per row would mean a hundred round trips per
+/// frame, and that cost lands on the UI thread.
+#[tauri::command]
+async fn sparks(
+    state: tauri::State<'_, AppState>,
+    requests: Vec<SparkRequest>,
+) -> Result<Vec<Option<Vec<f32>>>, String> {
+    let inner = state.inner.lock().map_err(|e| e.to_string())?;
+    Ok(requests
+        .iter()
+        .take(MAX_SPARKS)
+        .map(|r| inner.agg.spark(r.source_id, &r.path, r.slot))
+        .collect())
+}
+
 #[derive(Serialize)]
 struct Interface {
     name: String,
@@ -383,6 +411,7 @@ pub fn run() {
             reset_stats,
             set_paused,
             get_spark,
+            sparks,
             dmx_frame,
             list_interfaces,
             save_text,

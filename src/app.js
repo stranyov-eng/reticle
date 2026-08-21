@@ -44,6 +44,12 @@ const I18N = {
     colDt: 'Δt, ms',
     colDtHint: 'interval between messages: average (min–max)',
     colSilence: 'silence',
+    colGraph: 'graph',
+    rangeHint: 'Set an expected range to catch values that leave it',
+    expected: 'Expected',
+    clearRange: 'clear',
+    slotIndex: (n) => `slot ${n}`,
+    outOfRange: 'out of range',
     colSilenceHint: 'how long this address has been quiet',
     emptyTitle: 'No ports are being listened to.',
     quickStart: 'Listen for OSC on 9000',
@@ -93,6 +99,8 @@ const I18N = {
     failedStatus: 'failed',
     presetNameHint: 'preset name',
     presetsEmpty: 'No saved presets yet',
+    resendPreset: 'Send this preset',
+    editPreset: 'Load into the form without sending',
     deletePreset: 'Delete preset',
     needPresetName: 'Name the preset first',
 
@@ -192,6 +200,124 @@ function fmtSilence(us) {
   return `${Math.floor(s / 60)} ${t('unitMin')}`;
 }
 
+/* ---------- expected ranges ----------
+ * "I expect 0..1 here" — and anything outside gets flagged. Stored per
+ * source+address+slot, because a value only means something inside its slot.
+ */
+
+const RANGES_KEY = 'reticle-ranges';
+
+function loadRanges() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RANGES_KEY) || '{}');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+let ranges = loadRanges();
+
+const rangeKey = (sourceId, path, slot) => `${sourceId}:${path}:${slot}`;
+
+function setRange(sourceId, path, slot, min, max) {
+  const key = rangeKey(sourceId, path, slot);
+  if (!Number.isFinite(min) && !Number.isFinite(max)) {
+    delete ranges[key];
+  } else {
+    ranges[key] = { min, max };
+  }
+  localStorage.setItem(RANGES_KEY, JSON.stringify(ranges));
+}
+
+/** Is this slot's latest value outside what was declared? */
+function isOutOfRange(row, slot, index) {
+  const r = ranges[rangeKey(row.source_id, row.path, index)];
+  if (!r) return false;
+  const v = slot.last && slot.last.v;
+  if (typeof v !== 'number') return false;
+  return (Number.isFinite(r.min) && v < r.min) || (Number.isFinite(r.max) && v > r.max);
+}
+
+/* ---------- sparklines ---------- */
+
+/** Colours come from the theme, so reading them once per tick is enough —
+ *  getComputedStyle per canvas would be wasteful with a hundred rows. */
+let palette = null;
+
+function refreshPalette() {
+  const s = getComputedStyle(document.documentElement);
+  palette = {
+    line: s.getPropertyValue('--accent').trim(),
+    bad: s.getPropertyValue('--danger').trim(),
+    guide: s.getPropertyValue('--dimmer').trim(),
+  };
+}
+
+/**
+ * Draw a value history. When an expected range is given, its bounds are drawn
+ * as dashed guides and the trace turns red once it leaves them — that is the
+ * whole reason to declare a range.
+ */
+function drawSpark(canvas, data, range) {
+  if (!palette) refreshPalette();
+
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || Number(canvas.dataset.w) || 88;
+  const h = canvas.clientHeight || Number(canvas.dataset.h) || 20;
+  if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+  }
+
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const pts = (data || []).map((v) => (Number.isFinite(v) ? v : null));
+  const real = pts.filter((v) => v !== null);
+  if (real.length < 2) return;
+
+  let lo = Math.min(...real);
+  let hi = Math.max(...real);
+  if (range) {
+    if (Number.isFinite(range.min)) lo = Math.min(lo, range.min);
+    if (Number.isFinite(range.max)) hi = Math.max(hi, range.max);
+  }
+  if (hi - lo < 1e-9) { lo -= 0.5; hi += 0.5; }
+
+  const px = (i) => (i / (pts.length - 1)) * (w - 1) + 0.5;
+  const py = (v) => h - 1.5 - ((v - lo) / (hi - lo)) * (h - 3);
+
+  if (range) {
+    ctx.strokeStyle = palette.guide;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    for (const bound of [range.min, range.max]) {
+      if (!Number.isFinite(bound)) continue;
+      ctx.beginPath();
+      ctx.moveTo(0, py(bound));
+      ctx.lineTo(w, py(bound));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
+  const escaped = range && real.some((v) =>
+    (Number.isFinite(range.min) && v < range.min) || (Number.isFinite(range.max) && v > range.max));
+
+  ctx.strokeStyle = escaped ? palette.bad : palette.line;
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  let started = false;
+  pts.forEach((v, i) => {
+    if (v === null) { started = false; return; }
+    if (!started) { ctx.moveTo(px(i), py(v)); started = true; }
+    else ctx.lineTo(px(i), py(v));
+  });
+  ctx.stroke();
+}
+
 /* ---------- address table ---------- */
 
 function makeRow(key) {
@@ -201,6 +327,7 @@ function makeRow(key) {
     ['src', 'col-src'], ['path', 'col-path'], ['type', 'col-type'],
     ['last', 'num'], ['min', 'num'], ['max', 'num'], ['avg', 'num'],
     ['rate', 'num'], ['count', 'num'], ['dt', 'num'], ['silence', 'num silence'],
+    ['spark', 'spark'],
   ];
   for (const [name, cls] of cols) {
     const td = document.createElement('td');
@@ -208,28 +335,40 @@ function makeRow(key) {
     cells[name] = td;
     tr.appendChild(td);
   }
-  const entry = { tr, cells };
+
+  // One canvas per row, drawn from the batched history poll below.
+  const canvas = document.createElement('canvas');
+  canvas.style.width = '88px';
+  canvas.style.height = '20px';
+  cells.spark.appendChild(canvas);
+
+  const entry = { tr, cells, canvas };
+  tr.onclick = () => selectRow(key);
   rows.set(key, entry);
   addrBody.appendChild(tr);
   return entry;
 }
 
-/** Multi-slot addresses are drawn line by line inside the cell. */
-function fillSlots(td, slots, pick) {
+/** Multi-slot addresses are drawn line by line inside the cell.
+ *  `mark` optionally adds a class per slot — used to flag out-of-range values. */
+function fillSlots(td, slots, pick, mark) {
   if (slots.length <= 1) {
     const s = slots[0];
     td.textContent = s ? pick(s) : '—';
     td.classList.toggle('type-changed', !!(s && s.type_changed));
+    td.classList.toggle('out-of-range', !!(s && mark && mark(s, 0)));
     return;
   }
   td.textContent = '';
-  td.classList.remove('type-changed');
-  for (const s of slots) {
+  td.classList.remove('type-changed', 'out-of-range');
+  slots.forEach((s, i) => {
     const span = document.createElement('span');
-    span.className = 'slot' + (s.type_changed ? ' type-changed' : '');
+    span.className = 'slot'
+      + (s.type_changed ? ' type-changed' : '')
+      + (mark && mark(s, i) ? ' out-of-range' : '');
     span.textContent = pick(s);
     td.appendChild(span);
-  }
+  });
 }
 
 function render() {
@@ -251,7 +390,7 @@ function render() {
     c.src.textContent = row.port ?? row.source_id;
     c.path.textContent = row.path;
     fillSlots(c.type, row.slots, (s) => s.type_tag || '—');
-    fillSlots(c.last, row.slots, (s) => fmtValue(s.last));
+    fillSlots(c.last, row.slots, (s) => fmtValue(s.last), (s, i) => isOutOfRange(row, s, i));
     fillSlots(c.min, row.slots, (s) => fmtNum(s.min));
     fillSlots(c.max, row.slots, (s) => fmtNum(s.max));
     fillSlots(c.avg, row.slots, (s) => fmtNum(s.avg));
@@ -265,6 +404,7 @@ function render() {
     const silenceUs = Math.max(0, nowUs - row.last_us);
     c.silence.textContent = fmtSilence(silenceUs);
     entry.tr.classList.toggle('is-silent', silenceUs > SILENCE_S * 1e6);
+    entry.tr.classList.toggle('is-selected', key === selectedKey);
   }
 
   $('sbAddrs').textContent = t('addressCount', model.size);
@@ -277,6 +417,179 @@ function scheduleRender() {
   dirty = true;
   requestAnimationFrame(render);
 }
+
+/* ---------- detail panel ---------- */
+
+let selectedKey = null;
+
+function selectRow(key) {
+  selectedKey = key;
+  renderDetail();
+  scheduleRender();
+}
+
+/** Rebuilt only when the selection changes; values inside are refreshed by the
+ *  history poll, so typing in a range field does not fight with a repaint. */
+function renderDetail() {
+  const panel = $('detail');
+  const row = selectedKey && model.get(selectedKey);
+
+  if (!row) {
+    panel.hidden = true;
+    return;
+  }
+
+  panel.hidden = false;
+  $('detailPath').textContent = `${row.port ?? row.source_id} · ${row.path}`;
+
+  const box = $('detailSlots');
+  box.textContent = '';
+
+  row.slots.forEach((slot, i) => {
+    const card = document.createElement('div');
+    card.className = 'detail-slot';
+
+    const head = document.createElement('div');
+    head.className = 'detail-slot-head';
+
+    const idx = document.createElement('span');
+    idx.className = 'idx';
+    idx.textContent = t('slotIndex', i);
+
+    const val = document.createElement('span');
+    val.className = 'val';
+    val.dataset.role = 'value';
+
+    const mm = document.createElement('span');
+    mm.className = 'mm';
+    mm.dataset.role = 'minmax';
+
+    head.append(idx, val, mm);
+
+    const canvas = document.createElement('canvas');
+    canvas.style.width = '320px';
+    canvas.style.height = '68px';
+    canvas.dataset.slot = i;
+
+    const rangeRow = document.createElement('div');
+    rangeRow.className = 'range-row';
+
+    const label = document.createElement('span');
+    label.textContent = t('expected');
+
+    const stored = ranges[rangeKey(row.source_id, row.path, i)] || {};
+    const minIn = document.createElement('input');
+    minIn.type = 'text';
+    minIn.placeholder = 'min';
+    minIn.value = Number.isFinite(stored.min) ? stored.min : '';
+
+    const maxIn = document.createElement('input');
+    maxIn.type = 'text';
+    maxIn.placeholder = 'max';
+    maxIn.value = Number.isFinite(stored.max) ? stored.max : '';
+
+    const apply = () => {
+      const lo = parseFloat(minIn.value.replace(',', '.'));
+      const hi = parseFloat(maxIn.value.replace(',', '.'));
+      setRange(row.source_id, row.path, i, lo, hi);
+      scheduleRender();
+    };
+    minIn.onchange = apply;
+    maxIn.onchange = apply;
+
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'btn';
+    clear.textContent = t('clearRange');
+    clear.onclick = () => {
+      minIn.value = '';
+      maxIn.value = '';
+      apply();
+    };
+
+    rangeRow.append(label, minIn, maxIn, clear);
+    card.append(head, canvas, rangeRow);
+    box.appendChild(card);
+  });
+
+  refreshDetailValues();
+}
+
+/** Numbers and traces in the panel, refreshed on the history tick. */
+function refreshDetailValues(sparkData) {
+  const row = selectedKey && model.get(selectedKey);
+  if (!row || $('detail').hidden) return;
+
+  const cards = $('detailSlots').children;
+  row.slots.forEach((slot, i) => {
+    const card = cards[i];
+    if (!card) return;
+
+    const out = isOutOfRange(row, slot, i);
+    const val = card.querySelector('[data-role="value"]');
+    val.textContent = fmtValue(slot.last);
+    val.classList.toggle('out-of-range', out);
+
+    card.querySelector('[data-role="minmax"]').textContent =
+      `${fmtNum(slot.min)} … ${fmtNum(slot.max)}`;
+
+    if (sparkData && sparkData[i] !== undefined) {
+      drawSpark(card.querySelector('canvas'), sparkData[i], ranges[rangeKey(row.source_id, row.path, i)]);
+    }
+  });
+}
+
+$('detailClose').onclick = () => {
+  selectedKey = null;
+  renderDetail();
+  scheduleRender();
+};
+
+/* ---------- history polling ----------
+ * Sparklines change slowly compared to the numbers, so 5 Hz is plenty — and
+ * one batched call keeps a hundred rows from turning into a hundred round
+ * trips per frame.
+ */
+
+const SPARK_HZ = 5;
+
+setInterval(async () => {
+  if (paused) return;
+  if (!document.getElementById('view-addrs').classList.contains('is-active')) return;
+
+  refreshPalette();
+
+  // Rows in the table: slot 0 only — a thumbnail cannot show more usefully.
+  const visible = [...rows.keys()].slice(0, 200);
+  const requests = visible.map((key) => {
+    const row = model.get(key);
+    return { source_id: row.source_id, path: row.path, slot: 0 };
+  });
+
+  // The selected address additionally needs every slot for the detail panel.
+  const row = selectedKey && model.get(selectedKey);
+  const detailStart = requests.length;
+  if (row) {
+    row.slots.forEach((_, i) => requests.push({ source_id: row.source_id, path: row.path, slot: i }));
+  }
+  if (!requests.length) return;
+
+  let data;
+  try {
+    data = await invoke('sparks', { requests });
+  } catch {
+    return;
+  }
+
+  visible.forEach((key, i) => {
+    const entry = rows.get(key);
+    const modelRow = model.get(key);
+    if (!entry || !modelRow) return;
+    drawSpark(entry.canvas, data[i], ranges[rangeKey(modelRow.source_id, modelRow.path, 0)]);
+  });
+
+  if (row) refreshDetailValues(data.slice(detailStart));
+}, 1000 / SPARK_HZ);
 
 /* ---------- log ---------- */
 
@@ -934,30 +1247,46 @@ function renderPresets() {
   for (const p of list) {
     const chip = document.createElement('div');
     chip.className = 'preset-chip';
-    // A preset means "do this", not "fill the form": apply it and send.
-    chip.onclick = () => {
-      applyPreset(p);
-      sendRequest();
-    };
 
     const method = document.createElement('span');
     method.className = 'm';
     method.textContent = p.method;
 
     const name = document.createElement('span');
+    name.className = 'n';
     name.textContent = p.name;
 
-    const x = document.createElement('span');
-    x.className = 'x';
-    x.textContent = '×';
-    x.title = t('deletePreset');
-    x.onclick = (e) => {
-      e.stopPropagation();
+    // Three explicit actions instead of one click that sent immediately:
+    // repeating a POST by accident is far too easy otherwise.
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'preset-btn';
+    send.textContent = '↻';
+    send.title = t('resendPreset');
+    send.onclick = () => {
+      applyPreset(p);
+      sendRequest();
+    };
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'preset-btn';
+    edit.textContent = '✎';
+    edit.title = t('editPreset');
+    // Load into the form and stop there — nothing leaves the app.
+    edit.onclick = () => applyPreset(p);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'preset-btn is-danger';
+    del.textContent = '×';
+    del.title = t('deletePreset');
+    del.onclick = () => {
       savePresets(loadPresets().filter((i) => i.name !== p.name));
       renderPresets();
     };
 
-    chip.append(method, name, x);
+    chip.append(method, name, send, edit, del);
     strip.appendChild(chip);
   }
 }

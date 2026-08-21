@@ -63,6 +63,7 @@
   </nav>
 
   <main class="view is-active" id="view-addrs">
+    <div class="table-wrap">
     <table class="addr-table">
       <thead>
         <tr>
@@ -77,6 +78,7 @@
           <th class="num" data-i18n="colCount">count</th>
           <th class="num" data-i18n="colDt" data-i18n-title="colDtHint" title="interval between messages: average (min–max)">Δt, ms</th>
           <th class="num" data-i18n="colSilence" data-i18n-title="colSilenceHint" title="how long this address has been quiet">silence</th>
+          <th class="col-spark" data-i18n="colGraph">graph</th>
         </tr>
       </thead>
       <tbody id="addrBody"></tbody>
@@ -85,6 +87,17 @@
       <p data-i18n="emptyTitle">No ports are being listened to.</p>
       <button class="btn btn-action" id="quickStart" data-i18n="quickStart">Listen for OSC on 9000</button>
     </div>
+    </div>
+
+    <aside class="detail" id="detail" hidden>
+      <div class="detail-head">
+        <span class="detail-path" id="detailPath"></span>
+        <span class="detail-hint" data-i18n="rangeHint">Set an expected range to catch values that leave it</span>
+        <div class="grow"></div>
+        <button class="btn" type="button" id="detailClose">×</button>
+      </div>
+      <div class="detail-slots" id="detailSlots"></div>
+    </aside>
   </main>
 
   <main class="view" id="view-dmx">

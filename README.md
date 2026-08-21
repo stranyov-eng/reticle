@@ -48,6 +48,15 @@ the "60 Hz" stream is actually running at 43.
 send a float is almost always an integration bug — and one that takes an hour to
 find by hand.
 
+**Expected ranges.** Declare that a slot should stay within `0..1`, and anything
+leaving it turns red — in the table, in the detail panel and on the graph, where
+the bounds are drawn as dashed guides. Ranges are per slot, because on `/pos`
+with three floats X may live in `-1..1` while Z runs `0..10`.
+
+**Sparklines.** A history thumbnail per row, and a larger graph per argument slot
+in the detail panel that opens on click. History is fetched in one batched call
+at 5 Hz — a request per row per frame would put that cost on the UI thread.
+
 **Multi-port.** Several sources at once, each with its own protocol, port and
 interface.
 
@@ -101,8 +110,9 @@ body. Requests are issued from Rust rather than the webview, so there is no CORS
 any header is allowed, and self-signed certificates can be accepted with a
 checkbox.
 
-- **Presets** — click sends the request immediately. Export and import as JSON so
-  a set can be handed to a colleague.
+- **Presets** — three explicit actions per preset: send, load into the form
+  without sending, delete. Export and import as JSON so a set can be handed to a
+  colleague.
 - **History** — last 30 requests with body preview, status and timing; resend in
   one click.
 - **Save response** — file format is picked from `content-type`, JSON is saved
@@ -232,8 +242,8 @@ successfully.
 
 ## Roadmap
 
-- [ ] Sparklines and a watch panel for pinned addresses (backend already stores history)
-- [ ] Expected value ranges with out-of-range highlighting
+- [x] Sparklines and a detail panel per address
+- [x] Expected value ranges with out-of-range highlighting
 - [ ] Art-Net
 - [ ] OSC out, stream recording and replay
 - [ ] MIDI (`midir`)
