@@ -43,6 +43,9 @@ const TICK_MS: u64 = 33;
 const LOG_PER_TICK: usize = 300;
 /// Capacity of the channel between sockets and the collector.
 const CHANNEL_CAP: usize = 8192;
+/// How often a throughput run reports progress. 5 Hz is enough for a bar to
+/// look alive over a run that lasts a minute, and costs nothing.
+const NET_PROGRESS_MS: u64 = 200;
 
 struct Inner {
     next_id: u32,
@@ -381,16 +384,35 @@ async fn net_test(
     let running = state.net_running.clone();
     cancel.store(false, Ordering::SeqCst);
 
+    let progress = Arc::new(netspeed::Progress::default());
+
+    // Sampled from outside rather than reported from inside: the measuring
+    // threads only bump counters, so showing progress cannot slow down the very
+    // thing being measured.
+    {
+        let app = app.clone();
+        let progress = progress.clone();
+        let running = running.clone();
+        tauri::async_runtime::spawn(async move {
+            while running.load(Ordering::Relaxed) {
+                let _ = app.emit("nettest-progress", progress.snapshot());
+                tokio::time::sleep(Duration::from_millis(NET_PROGRESS_MS)).await;
+            }
+        });
+    }
+
     tauri::async_runtime::spawn_blocking(move || {
         for target in targets {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
+            progress.enter(target.id);
             let _ = app.emit("nettest-start", target.id);
-            let result = netspeed::run_target(&target, &opts, &cancel);
+            let result = netspeed::run_target(&target, &opts, &cancel, &progress);
             let _ = app.emit("nettest-result", result);
         }
 
+        progress.finish();
         running.store(false, Ordering::SeqCst);
         let _ = app.emit("nettest-done", cancel.load(Ordering::Relaxed));
     });

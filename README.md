@@ -112,7 +112,8 @@ servers actually getting the link it should?*
 Targets are file shares, added one by one or as a range — give the first and
 last address plus the share path, and all the hosts in between appear at once.
 Each row reports read speed, write speed, latency, the share of the selected
-link speed, and **which local adapter the traffic actually left from**.
+link speed, **which file the read came from** and **which local adapter the
+traffic actually left from**.
 
 Deliberate choices:
 
@@ -126,6 +127,17 @@ Deliberate choices:
   on a 10 GbE link — it runs out of one CPU core and round-trip latency long
   before it runs out of wire. Measuring single-threaded reports that ceiling as
   if it were the network. Comparing 1 stream against 8 tells the two apart.
+- **The file read is named.** A read test streams from the first file large
+  enough that it finds, which on different servers can be a different file —
+  one of them possibly on a slow volume or badly fragmented. Two figures
+  produced from two different files are not comparable, and without naming the
+  file there is no way to tell that apart from a network fault. The name is in
+  the table and in the exported report.
+- **Progress is shown while a run is in flight.** A 512 MB read over a
+  congested link takes most of a minute, and a table of dashes for that long is
+  indistinguishable from a hung app. The measuring threads only bump counters;
+  a ticker samples them five times a second, so reporting cannot slow down the
+  thing being measured.
 - **Machines are named, not just addressed.** Reverse DNS turns `192.168.2.14`
   into `03-ACT-2`, looked up in parallel as targets are added. No resolver on
   the network simply means no label, which is not an error.

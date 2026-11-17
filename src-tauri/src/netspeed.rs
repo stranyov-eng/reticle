@@ -19,7 +19,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -164,6 +164,73 @@ fn default_mode() -> String {
     "read".to_string()
 }
 
+pub const PHASE_IDLE: u8 = 0;
+pub const PHASE_PROBE: u8 = 1;
+pub const PHASE_READ: u8 = 2;
+pub const PHASE_WRITE: u8 = 3;
+
+/// Live counters for the run in flight.
+///
+/// A 512 MB read over a slow link takes the better part of a minute, and a
+/// table that sits blank for that long is indistinguishable from a hung app.
+/// The measuring threads bump these counters; a ticker elsewhere samples them,
+/// so reporting costs the measurement nothing and cannot slow it down.
+#[derive(Default)]
+pub struct Progress {
+    /// Target currently being measured.
+    pub target: AtomicU32,
+    /// Bytes moved so far in the current phase.
+    pub done: AtomicU64,
+    /// Bytes this phase intends to move. Zero while probing, where there is
+    /// nothing to count.
+    pub total: AtomicU64,
+    pub phase: AtomicU8,
+}
+
+/// A sampled view of `Progress`, ready to go to the interface.
+#[derive(Serialize, Clone)]
+pub struct ProgressSnap {
+    pub id: u32,
+    pub phase: &'static str,
+    pub done: u64,
+    pub total: u64,
+}
+
+impl Progress {
+    fn begin(&self, phase: u8, total: u64) {
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+        self.phase.store(phase, Ordering::Relaxed);
+    }
+
+    fn add(&self, bytes: u64) {
+        self.done.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn enter(&self, id: u32) {
+        self.target.store(id, Ordering::Relaxed);
+        self.begin(PHASE_PROBE, 0);
+    }
+
+    pub fn finish(&self) {
+        self.begin(PHASE_IDLE, 0);
+    }
+
+    pub fn snapshot(&self) -> ProgressSnap {
+        ProgressSnap {
+            id: self.target.load(Ordering::Relaxed),
+            phase: match self.phase.load(Ordering::Relaxed) {
+                PHASE_PROBE => "probe",
+                PHASE_READ => "read",
+                PHASE_WRITE => "write",
+                _ => "idle",
+            },
+            done: self.done.load(Ordering::Relaxed),
+            total: self.total.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[derive(Serialize, Clone)]
 pub struct TargetResult {
     pub id: u32,
@@ -176,6 +243,11 @@ pub struct TargetResult {
     /// scaled.
     pub read_bytes: u64,
     pub write_bytes: u64,
+    /// Which file the read was streamed from, relative to the target folder,
+    /// and how big it is. Two servers measured against different files are not
+    /// comparable, and without this the difference is invisible.
+    pub read_file: Option<String>,
+    pub read_file_bytes: u64,
     /// Local address the traffic actually left from, and its adapter.
     pub via_ip: Option<String>,
     pub via_adapter: Option<String>,
@@ -197,6 +269,8 @@ impl TargetResult {
             latency_ms: None,
             read_bytes: 0,
             write_bytes: 0,
+            read_file: None,
+            read_file_bytes: 0,
             via_ip: None,
             host_name: None,
             via_adapter: None,
@@ -341,6 +415,9 @@ struct Measured {
     bytes: u64,
     seconds: f64,
     note: Option<String>,
+    /// Set by the read path only: the file the figure came from.
+    file: Option<String>,
+    file_bytes: u64,
 }
 
 fn mbps(m: &Measured) -> f64 {
@@ -355,12 +432,26 @@ fn mbps(m: &Measured) -> f64 {
 ///
 /// Different offsets matter: hammering the same region would be served from the
 /// server's RAM cache and measure memory rather than the path to it.
-fn measure_read(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>) -> Result<Measured, String> {
+fn measure_read(
+    dir: &Path,
+    size: u64,
+    threads: usize,
+    cancel: &Arc<AtomicBool>,
+    progress: &Arc<Progress>,
+) -> Result<Measured, String> {
     let threads = threads.max(1);
     let mb = |bytes: u64| bytes / (1024 * 1024);
 
     let (file, file_len) = find_read_source(dir, size)
         .ok_or_else(|| "no files here to read from — try write mode instead".to_string())?;
+
+    // Shown relative to the target folder: the subfolder is half the answer
+    // when one server reads at a tenth of the others.
+    let shown = file
+        .strip_prefix(dir)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .into_owned();
 
     let mut note = None;
 
@@ -391,12 +482,15 @@ fn measure_read(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>)
     // trimmed to a multiple of the block size.
     let per_thread = align_down(per_thread - (per_thread % BLOCK as u64)).max(BLOCK as u64);
 
+    progress.begin(PHASE_READ, per_thread * threads as u64);
+
     let started = Instant::now();
     let mut handles = Vec::with_capacity(threads);
 
     for i in 0..threads {
         let path = file.clone();
         let cancel = cancel.clone();
+        let progress = progress.clone();
         let offset = align_down(slice * i as u64);
 
         handles.push(std::thread::spawn(move || -> Result<(u64, bool), String> {
@@ -414,7 +508,10 @@ fn measure_read(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>)
                 // outright when the cache is bypassed.
                 match f.read(buf.as_mut()) {
                     Ok(0) => break,
-                    Ok(n) => done += n as u64,
+                    Ok(n) => {
+                        done += n as u64;
+                        progress.add(n as u64);
+                    }
                     Err(e) => return Err(e.to_string()),
                 }
             }
@@ -441,6 +538,8 @@ fn measure_read(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>)
         bytes,
         seconds: started.elapsed().as_secs_f64(),
         note,
+        file: Some(shown),
+        file_bytes: file_len,
     })
 }
 
@@ -448,7 +547,13 @@ fn measure_read(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>)
 ///
 /// Every file is flushed and synced before the clock stops: without that the
 /// number would describe the client's write cache, not the server.
-fn measure_write(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>) -> Result<Measured, String> {
+fn measure_write(
+    dir: &Path,
+    size: u64,
+    threads: usize,
+    cancel: &Arc<AtomicBool>,
+    progress: &Arc<Progress>,
+) -> Result<Measured, String> {
     let threads = threads.max(1);
     // Whole blocks only, as unbuffered writes demand.
     let per_thread = {
@@ -457,12 +562,15 @@ fn measure_write(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>
     }
     .max(BLOCK as u64);
 
+    progress.begin(PHASE_WRITE, per_thread * threads as u64);
+
     let started = Instant::now();
     let mut handles = Vec::with_capacity(threads);
 
     for i in 0..threads {
         let path = dir.join(format!("{TMP_PREFIX}-{i}.tmp"));
         let cancel = cancel.clone();
+        let progress = progress.clone();
 
         handles.push(std::thread::spawn(move || -> (Result<(u64, bool), String>, PathBuf) {
             let run = || -> Result<(u64, bool), String> {
@@ -481,6 +589,7 @@ fn measure_write(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>
                     }
                     f.write_all(buf.as_mut()).map_err(|e| e.to_string())?;
                     done += BLOCK as u64;
+                    progress.add(BLOCK as u64);
                 }
 
                 f.flush().map_err(|e| e.to_string())?;
@@ -523,12 +632,19 @@ fn measure_write(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>
         bytes,
         seconds: started.elapsed().as_secs_f64(),
         note: cached.then(|| "cache could not be bypassed — the figure may be inflated".to_string()),
+        file: None,
+        file_bytes: 0,
     })
 }
 
 /// Run one target. Cheap checks first, so an unreachable share fails in
 /// milliseconds instead of after a timeout on a large read.
-pub fn run_target(target: &Target, opts: &TestOpts, cancel: &Arc<AtomicBool>) -> TargetResult {
+pub fn run_target(
+    target: &Target,
+    opts: &TestOpts,
+    cancel: &Arc<AtomicBool>,
+    progress: &Arc<Progress>,
+) -> TargetResult {
     let mut out = TargetResult::blank(target);
     let dir = PathBuf::from(&target.path);
 
@@ -552,18 +668,20 @@ pub fn run_target(target: &Target, opts: &TestOpts, cancel: &Arc<AtomicBool>) ->
     let wants_write = opts.mode == "write" || opts.mode == "both";
 
     if wants_read {
-        match measure_read(&dir, size, threads, cancel) {
+        match measure_read(&dir, size, threads, cancel, progress) {
             Ok(m) => {
                 out.read_mbps = Some(mbps(&m));
                 out.read_bytes = m.bytes;
                 out.note = m.note;
+                out.read_file = m.file;
+                out.read_file_bytes = m.file_bytes;
             }
             Err(e) => out.error = Some(e),
         }
     }
 
     if wants_write && !cancel.load(Ordering::Relaxed) {
-        match measure_write(&dir, size, threads, cancel) {
+        match measure_write(&dir, size, threads, cancel, progress) {
             Ok(m) => {
                 out.write_mbps = Some(mbps(&m));
                 out.write_bytes = m.bytes;
@@ -584,6 +702,10 @@ pub fn run_target(target: &Target, opts: &TestOpts, cancel: &Arc<AtomicBool>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prog() -> Arc<Progress> {
+        Arc::new(Progress::default())
+    }
 
     #[test]
     fn extracts_host_from_unc() {
@@ -645,7 +767,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let size = 32 * 1024 * 1024;
 
-        let written = measure_write(&dir, size, 2, &cancel).expect("write should succeed");
+        let written = measure_write(&dir, size, 2, &cancel, &prog()).expect("write should succeed");
         assert!(written.bytes >= size, "all requested bytes should be written");
         assert!(mbps(&written) > 0.0);
 
@@ -653,7 +775,7 @@ mod tests {
         let payload = vec![7u8; (size + 8 * 1024 * 1024) as usize];
         fs::write(dir.join("payload.bin"), &payload).unwrap();
 
-        let read = measure_read(&dir, size, 2, &cancel).expect("read should succeed");
+        let read = measure_read(&dir, size, 2, &cancel, &prog()).expect("read should succeed");
         assert!(read.bytes > 0);
 
         fs::remove_dir_all(&dir).ok();
@@ -665,7 +787,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        measure_write(&dir, 16 * 1024 * 1024, 2, &cancel).unwrap();
+        measure_write(&dir, 16 * 1024 * 1024, 2, &cancel, &prog()).unwrap();
 
         let leftovers: Vec<_> = fs::read_dir(&dir)
             .unwrap()
@@ -693,8 +815,42 @@ mod tests {
         assert_eq!(found.0.file_name().unwrap(), "clip.mov");
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let m = measure_read(&root, 16 * 1024 * 1024, 2, &cancel).expect("read should work");
+        let m = measure_read(&root, 16 * 1024 * 1024, 2, &cancel, &prog()).expect("read should work");
         assert!(m.bytes > 0);
+
+        // Which file carried the figure, and where it was: two servers measured
+        // against different files are not comparable, and the subfolder is half
+        // the explanation.
+        let named = m.file.expect("the read should name its source file");
+        assert!(named.ends_with("clip.mov"), "got {named}");
+        assert!(named.contains("scene01"), "the subfolder should survive: {named}");
+        assert!(!named.contains(root.to_string_lossy().as_ref()), "path should be relative: {named}");
+        assert_eq!(m.file_bytes, 24 * 1024 * 1024);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// The progress counters must reach the volume actually moved, or the bar
+    /// would stall short of the end on every run.
+    #[test]
+    fn progress_counts_every_byte_read() {
+        let root = std::env::temp_dir().join("reticle-netspeed-progress");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("clip.mov"), vec![7u8; 24 * 1024 * 1024]).unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let progress = prog();
+        let m = measure_read(&root, 16 * 1024 * 1024, 2, &cancel, &progress).expect("read should work");
+
+        let snap = progress.snapshot();
+        assert_eq!(snap.phase, "read");
+        assert_eq!(snap.done, m.bytes);
+        // The total is declared before the first block, so a bar can be sized
+        // immediately rather than growing its own scale as it goes.
+        assert_eq!(snap.total, m.bytes);
+
+        progress.finish();
+        assert_eq!(progress.snapshot().phase, "idle");
 
         fs::remove_dir_all(&root).ok();
     }
@@ -708,7 +864,7 @@ mod tests {
         fs::write(dir.join("tiny.bin"), vec![1u8; 1024]).unwrap();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let err = measure_read(&dir, 512 * 1024 * 1024, 4, &cancel).unwrap_err();
+        let err = measure_read(&dir, 512 * 1024 * 1024, 4, &cancel, &prog()).unwrap_err();
 
         assert!(err.contains("MB"), "message should state the size found: {err}");
         assert!(err.contains("streams"), "message should hint at a fix: {err}");
@@ -722,7 +878,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let err = measure_read(&dir, 32 * 1024 * 1024, 2, &cancel).unwrap_err();
+        let err = measure_read(&dir, 32 * 1024 * 1024, 2, &cancel, &prog()).unwrap_err();
         assert!(err.contains("no files"), "got: {err}");
 
         fs::remove_dir_all(&dir).ok();

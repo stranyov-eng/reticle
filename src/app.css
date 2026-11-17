@@ -493,6 +493,45 @@ tr.is-silent td.silence { color: var(--danger); }
 }
 .net-warn[hidden] { display: none; }
 
+/* ---- progress of a run ----
+ * A 512 MB read can take most of a minute. Without this the table sits on
+ * dashes for that long, which looks exactly like a hung app.
+ */
+.net-prog {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel2);
+}
+.net-prog[hidden] { display: none; }
+.net-prog-track {
+  flex: 1;
+  height: 4px;
+  min-width: 80px;
+  background: var(--line2);
+  overflow: hidden;
+}
+.net-prog-track i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: var(--frame-active);
+  /* Scaled rather than resized: a transform is composited, so the bar cannot
+   * cost layout work five times a second while throughput is being measured. */
+  transform: scaleX(var(--net-prog, 0));
+  transform-origin: left center;
+  /* Matched to the 200 ms sampling rate, so the bar glides instead of ticking. */
+  transition: transform 180ms linear;
+}
+.net-prog-text {
+  font-family: var(--mono);
+  font-size: var(--fs-badge);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
 .net-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: var(--fs-input); }
 .net-table thead th {
   position: sticky;
@@ -517,13 +556,28 @@ tr.is-silent td.silence { color: var(--danger); }
   white-space: nowrap;
   vertical-align: middle;
 }
-.net-col-path { width: 44%; }
+.net-col-path { width: 34%; }
 .net-col-act { width: 92px; }
 .net-table td.path input { width: 100%; }
 
 /* the row being measured right now */
 .net-table tbody tr.is-running td { background: var(--panel2); }
-.net-table tbody tr.is-running td.status { color: var(--frame-active); }
+.net-table tbody tr.is-running td.status { color: var(--frame-active); position: relative; }
+/* The running row carries its own share as a hairline under the status, so the
+ * eye does not have to travel back to the toolbar to see who is in flight. */
+.net-table tbody tr.is-running td.status::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 1px;
+  height: 2px;
+  background: linear-gradient(
+    to right,
+    var(--frame-active) var(--row-prog, 0%),
+    var(--line2) var(--row-prog, 0%)
+  );
+}
 .net-table td.status { color: var(--dim); font-family: var(--font); font-size: var(--fs-sublabel); white-space: normal; }
 .net-table td.status.bad { color: var(--danger); }
 
@@ -755,6 +809,10 @@ tr.is-silent td.silence { color: var(--danger); }
 .statusbar .hint { font-family: var(--font); color: var(--dimmer); }
 
 .net-col-via { width: 120px; }
+/* which file the read came from: context for the number beside it, so it is
+ * dimmed rather than competing with it */
+.net-col-file { width: 180px; }
+.net-table td.file { color: var(--dim); }
 .net-table td.read, .net-table td.write { line-height: 1.3; }
 .net-table td.via { color: var(--dim); font-family: var(--mono); }
 .net-table td.via.slow { color: var(--danger); }

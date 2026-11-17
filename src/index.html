@@ -231,6 +231,11 @@
       <span class="net-note" id="netNote"></span>
     </div>
 
+    <div class="net-prog" id="netProg" hidden>
+      <div class="net-prog-track"><i id="netProgFill"></i></div>
+      <span class="net-prog-text" id="netProgText"></span>
+    </div>
+
     <div class="net-warn" id="netWarn" hidden data-i18n="netWriteWarning">
       Write mode creates temporary files in each folder and deletes them afterwards.
     </div>
@@ -253,6 +258,7 @@
           <th class="num" data-i18n="netLatency">latency</th>
           <th class="num" id="netReadHead">read</th>
           <th class="num" id="netWriteHead">write</th>
+          <th class="net-col-file" data-i18n="netFile">file read</th>
           <th class="net-col-via" data-i18n="netVia">via</th>
           <th data-i18n="netStatus">status</th>
           <th class="net-col-act"></th>

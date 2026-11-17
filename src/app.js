@@ -118,6 +118,14 @@ const I18N = {
     netMeasuring: 'measuring…',
     netDone: (n) => `${n} measured`,
     netCancelled: 'stopped',
+    netFile: 'file read',
+    netFileSize: (name, mb) => `${name} — ${mb} MB`,
+    netPhaseProbe: 'reaching the host…',
+    netPhaseRead: 'reading',
+    netPhaseWrite: 'writing',
+    netPhaseIdle: 'working…',
+    netProgOf: (done, total) => `${done} / ${total} MB`,
+    netProgStep: (i, n) => `${i} of ${n}`,
     netOneStream: 'one stream measures a single stream, not the link',
     mbps: (n) => `${Math.round(n)} MB/s`,
     ms: (n) => `${n.toFixed(1)} ms`,
@@ -1329,6 +1337,11 @@ function applyLinkChoice() {
   }
 }
 
+/** Keep the tail of a path, which is the part that identifies it. */
+function trimPathLeft(text, max) {
+  return text.length <= max ? text : `…${text.slice(-(max - 1))}`;
+}
+
 function netRowFor(target) {
   let entry = netRows.get(target.id);
   if (entry) return entry;
@@ -1378,6 +1391,15 @@ function netRowFor(target) {
     cells[`${name}Pct`] = pct;
   }
 
+  // Which file the read came from. Not decoration: when one server reads at a
+  // tenth of the others with normal writes, the file it happened to pick is the
+  // first thing to check — and `find_read_source` takes the first big enough,
+  // which on different servers can be a different file entirely.
+  const file = document.createElement('td');
+  file.className = 'file';
+  file.textContent = '—';
+  cells.file = file;
+
   const status = document.createElement('td');
   status.className = 'status';
   cells.status = status;
@@ -1412,7 +1434,7 @@ function netRowFor(target) {
 
   cells.via.className = 'via';   // left-aligned: it is a name, not a number
 
-  tr.append(pathTd, cells.latency, cells.read, cells.write, cells.via, status, acts);
+  tr.append(pathTd, cells.latency, cells.read, cells.write, file, cells.via, status, acts);
   entry = { tr, cells };
   netRows.set(target.id, entry);
   return entry;
@@ -1450,6 +1472,8 @@ function applyNetResult(result) {
 
   const c = entry.cells;
   entry.tr.classList.remove('is-running');
+  entry.tr.style.removeProperty('--row-prog');
+  if (netRunState) netRunState.done.add(result.id);
 
   c.latency.textContent = result.latency_ms === null || result.latency_ms === undefined
     ? '—' : t('ms', result.latency_ms);
@@ -1462,6 +1486,13 @@ function applyNetResult(result) {
   // Which adapter the traffic really left from. On a machine with a 10 GbE
   // card beside a gigabit dongle this is the difference between a real
   // measurement and a misleading one.
+  // Cut from the left: the file name is what identifies it, the folders in
+  // front are context that can be read from the tooltip.
+  c.file.textContent = result.read_file ? trimPathLeft(result.read_file, 26) : '—';
+  c.file.title = result.read_file
+    ? t('netFileSize', result.read_file, Math.round(result.read_file_bytes / (1024 * 1024)))
+    : '';
+
   const via = result.via_adapter || result.via_ip;
   c.via.textContent = via || '—';
   c.via.title = result.via_ip || '';
@@ -1518,8 +1549,11 @@ function drawReport() {
   const rowH = 30;
   const headH = 108;
   const footH = 52;
-  const cols = { target: pad, latency: 740, read: 860, write: 1030, via: 1240 };
-  const width = 1520;
+  // The file read is part of the evidence, not a detail: two servers measured
+  // against different files are not comparable, and a report that hides which
+  // one was used cannot be checked later.
+  const cols = { target: pad, latency: 620, read: 720, write: 890, file: 1060, via: 1340 };
+  const width = 1580;
   const height = headH + rowsData.length * rowH + footH;
 
   const canvas = document.createElement('canvas');
@@ -1567,6 +1601,7 @@ function drawReport() {
   ctx.fillText('LATENCY', cols.latency, 97);
   ctx.fillText('READ · % OF LINK', cols.read, 97);
   ctx.fillText('WRITE · % OF LINK', cols.write, 97);
+  ctx.fillText('FILE READ', cols.file, 97);
   ctx.fillText('VIA', cols.via, 97);
 
   const best = Math.max(...rowsData.map((r) => r.result.read_mbps || 0));
@@ -1617,6 +1652,14 @@ function drawReport() {
     pair(result.read_mbps, cols.read, slow);
     pair(result.write_mbps, cols.write, false);
 
+    ctx.font = mono(12);
+    ctx.fillStyle = colour.dim;
+    ctx.fillText(
+      result.read_file ? trimLeft(ctx, result.read_file, cols.via - cols.file - 24) : '—',
+      cols.file,
+      y,
+    );
+
     ctx.font = mono(13);
     ctx.fillStyle = colour.dim;
     ctx.fillText(result.via_adapter || result.via_ip || '—', cols.via, y);
@@ -1666,6 +1709,73 @@ async function exportNetReport() {
   }
 }
 
+/* ---------- progress ----------
+ * A 512 MB read over a congested link takes most of a minute, during which a
+ * table of dashes looks exactly like a hung app. The backend bumps counters
+ * and a ticker samples them, so the bar costs the measurement nothing.
+ */
+
+let netRunState = null;   // { ids, mode } for the run in flight
+
+/** How a machine is best referred to: its name if the network knows one. */
+function netLabelFor(id) {
+  const target = netTargets.find((x) => x.id === id);
+  if (!target) return '';
+  const host = hostOfUnc(target.path);
+  return (host && hostNames.get(host)) || host || target.path;
+}
+
+function netPhaseLabel(phase) {
+  if (phase === 'probe') return t('netPhaseProbe');
+  if (phase === 'read') return t('netPhaseRead');
+  if (phase === 'write') return t('netPhaseWrite');
+  return t('netPhaseIdle');
+}
+
+function paintNetProgress(snap) {
+  if (!netRunState) return;
+
+  const { ids, mode, done } = netRunState;
+  const i = ids.indexOf(snap.id);
+  if (i < 0) return;
+
+  // In read+write mode each phase owns half of a target's share of the bar:
+  // otherwise the bar would jump back to zero halfway through every target.
+  const span = mode === 'both' ? 0.5 : 1;
+  const base = mode === 'both' && snap.phase === 'write' ? 0.5 : 0;
+  const within = snap.total > 0 ? Math.min(1, snap.done / snap.total) : 0;
+  const overall = (i + base + within * span) / ids.length;
+
+  $('netProgFill').style.setProperty('--net-prog', overall.toFixed(4));
+
+  const mb = (bytes) => Math.round(bytes / (1024 * 1024));
+  const detail = snap.total > 0
+    ? `${netPhaseLabel(snap.phase)} ${t('netProgOf', mb(snap.done), mb(snap.total))}`
+    : netPhaseLabel(snap.phase);
+
+  $('netProgText').textContent =
+    `${t('netProgStep', i + 1, ids.length)} · ${netLabelFor(snap.id)} · ${detail}`;
+
+  // The running row carries its own share as a hairline, so the eye does not
+  // have to travel back to the toolbar to see which target is in flight.
+  // A sample can land after the result did — the counters are only read every
+  // 200 ms — and must not overwrite the finished row's reading with "100%".
+  const entry = done.has(snap.id) ? null : netRows.get(snap.id);
+  if (entry) {
+    entry.tr.style.setProperty('--row-prog', `${(within * 100).toFixed(1)}%`);
+    entry.cells.status.textContent = snap.total > 0
+      ? `${netPhaseLabel(snap.phase)} ${Math.round(within * 100)}%`
+      : netPhaseLabel(snap.phase);
+  }
+}
+
+function endNetProgress() {
+  netRunState = null;
+  $('netProg').hidden = true;
+  $('netProgFill').style.setProperty('--net-prog', '0');
+  for (const { tr } of netRows.values()) tr.style.removeProperty('--row-prog');
+}
+
 async function runNetTest() {
   const targets = netTargets.filter((x) => x.path);
   if (!targets.length || netBusy) return;
@@ -1688,6 +1798,11 @@ async function runNetTest() {
     mode: $('netMode').value,
   };
 
+  netRunState = { ids: targets.map((x) => x.id), mode: opts.mode, done: new Set() };
+  $('netProgFill').style.setProperty('--net-prog', '0');
+  $('netProgText').textContent = t('netProgStep', 1, targets.length);
+  $('netProg').hidden = false;
+
   try {
     await invoke('net_test', { targets: targets.map(({ id, path }) => ({ id, path })), opts });
   } catch (e) {
@@ -1695,6 +1810,7 @@ async function runNetTest() {
     netBusy = false;
     $('netRun').disabled = false;
     $('netStop').disabled = true;
+    endNetProgress();
   }
 }
 
@@ -1705,6 +1821,8 @@ listen('nettest-start', (e) => {
   entry.cells.status.textContent = t('netMeasuring');
 });
 
+listen('nettest-progress', (e) => paintNetProgress(e.payload));
+
 listen('nettest-result', (e) => applyNetResult(e.payload));
 
 listen('nettest-done', (e) => {
@@ -1712,6 +1830,7 @@ listen('nettest-done', (e) => {
   $('netRun').disabled = false;
   $('netStop').disabled = true;
   $('netNote').textContent = e.payload ? t('netCancelled') : t('netDone', netResults.size);
+  endNetProgress();
 });
 
 $('netRun').onclick = runNetTest;
