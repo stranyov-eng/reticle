@@ -7,19 +7,28 @@
 .DESCRIPTION
     Reticle measures with its own I/O loop. Before its numbers are used to tell
     somebody their network is misconfigured, they are worth confirming with code
-    that nobody in this room wrote: robocopy moves the bytes, Stopwatch times
-    them, and this script performs no I/O of its own.
+    that nobody in this room wrote: robocopy moves the bytes and Stopwatch times
+    them from outside.
 
     Writes send a locally generated, incompressible file to each share.
 
-    Reads pull an *existing* file back from each share — existing on purpose. A
-    file this machine has just written is still in this machine's own RAM, and
-    reading it back would measure that rather than the network. That is the one
-    real trap in this kind of test, and the reason the read half does not reuse
-    the file the write half just sent.
+    Reads pull an *existing* file back — existing on purpose. A file this
+    machine wrote a second ago is still in this machine's own RAM, and reading
+    it back would measure that rather than the network. That is the one real
+    trap in this kind of test.
 
     Nothing is left behind: the file written to each share is removed, including
     after a failure.
+
+.PARAMETER ReadFile
+    Path of the file to read, relative to the share, the same on every server —
+    'objects/big.mov'. Strongly preferred: servers compared against different
+    files are not compared at all, and naming it also skips the directory scan.
+    Without it the script looks for a suitable file on each server by itself.
+
+.PARAMETER MaxReadMB
+    Above this size a file is read in part rather than copied whole, so one
+    enormous clip cannot turn a quick check into a quarter of an hour.
 
 .PARAMETER Repeat
     Run the whole row more than once. If the same servers are slow on every pass
@@ -34,11 +43,14 @@ param(
     [Parameter(Mandatory = $true)] [string] $First,
     [Parameter(Mandatory = $true)] [string] $Last,
     [Parameter(Mandatory = $true)] [string] $Share,
+    [string] $ReadFile,
     [int] $SizeMB = 512,
+    [int] $MaxReadMB = 2048,
     [int] $Repeat = 1
 )
 
 $ErrorActionPreference = 'Stop'
+$BlockSize = 4194304
 
 function Get-AddressRange {
     param([string] $From, [string] $To)
@@ -63,6 +75,22 @@ function Add-Note {
     return "$Existing; $Add"
 }
 
+# A host that is off answers nothing, and Test-Path against it blocks for the
+# better part of a minute. Two seconds on port 445 settles it first.
+function Test-SmbPort {
+    param([string] $Address, [int] $TimeoutMs = 2000)
+
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $pending = $client.BeginConnect($Address, 445, $null, $null)
+        if (-not $pending.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+        $client.EndConnect($pending)
+        return $true
+    }
+    catch { return $false }
+    finally { $client.Close() }
+}
+
 # Robocopy, timed by us rather than parsed out of its own output: its wording is
 # localised and its summary is not worth depending on.
 function Invoke-TimedCopy {
@@ -78,12 +106,58 @@ function Invoke-TimedCopy {
     return $sw.Elapsed.TotalSeconds
 }
 
+# Prefer a file big enough to measure but small enough to be quick. The scan is
+# capped in depth and in entries: a project folder can hold tens of thousands of
+# files, and over a share that crawls, enumerating them all is the slow part.
 function Find-ReadSource {
-    param([string] $Root, [long] $MinBytes)
+    param([string] $Root, [long] $MinBytes, [long] $MaxBytes)
 
-    Get-ChildItem -LiteralPath $Root -File -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+    $banded = Get-ChildItem -LiteralPath $Root -File -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+        Where-Object { $_.Length -ge $MinBytes -and $_.Length -le $MaxBytes } |
+        Select-Object -First 1
+    if ($banded) { return $banded }
+
+    Get-ChildItem -LiteralPath $Root -File -Recurse -Depth 3 -ErrorAction SilentlyContinue |
         Where-Object { $_.Length -ge $MinBytes } |
         Select-Object -First 1
+}
+
+# Whole file through robocopy where that is quick; otherwise the first slice of
+# it through plain buffered reads, so the run takes a time you can predict.
+function Measure-Read {
+    param([System.IO.FileInfo] $Source, [string] $Landing, [long] $CapBytes)
+
+    if ($Source.Length -le $CapBytes) {
+        $seconds = Invoke-TimedCopy -SourceDir $Source.DirectoryName -FileName $Source.Name -DestDir $Landing
+        Remove-Item -LiteralPath (Join-Path $Landing $Source.Name) -Force -ErrorAction SilentlyContinue
+        if ($null -eq $seconds -or $seconds -le 0) { return $null }
+        return [pscustomobject] @{
+            MBs     = [math]::Round(($Source.Length / 1MB) / $seconds)
+            Partial = $false
+        }
+    }
+
+    $buffer = New-Object byte[] $BlockSize
+    $stream = [System.IO.File]::OpenRead($Source.FullName)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $done = [long] 0
+    try {
+        while ($done -lt $CapBytes) {
+            $n = $stream.Read($buffer, 0, $buffer.Length)
+            if ($n -le 0) { break }
+            $done += $n
+        }
+    }
+    finally {
+        $sw.Stop()
+        $stream.Dispose()
+    }
+
+    if ($sw.Elapsed.TotalSeconds -le 0 -or $done -le 0) { return $null }
+    return [pscustomobject] @{
+        MBs     = [math]::Round(($done / 1MB) / $sw.Elapsed.TotalSeconds)
+        Partial = $true
+    }
 }
 
 $scratch = Join-Path $env:TEMP 'reticle-smb-check'
@@ -93,17 +167,19 @@ New-Item -ItemType Directory -Force -Path $scratch, $landing | Out-Null
 $payloadName = 'smb-check-payload.bin'
 $payload = Join-Path $scratch $payloadName
 $minBytes = [long] $SizeMB * 1MB
+$capBytes = [long] $MaxReadMB * 1MB
+$results = @()
 
 try {
     Write-Host "Building a $SizeMB MB incompressible payload..." -ForegroundColor DarkGray
-    $block = New-Object byte[] 4194304
+    $payloadBlock = New-Object byte[] $BlockSize
     $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-    $rng.GetBytes($block)
+    $rng.GetBytes($payloadBlock)
 
     $stream = [System.IO.File]::Create($payload)
     try {
         $blocks = [math]::Max(1, [int] ($SizeMB / 4))
-        for ($i = 0; $i -lt $blocks; $i++) { $stream.Write($block, 0, $block.Length) }
+        for ($i = 0; $i -lt $blocks; $i++) { $stream.Write($payloadBlock, 0, $payloadBlock.Length) }
     }
     finally {
         $stream.Dispose()
@@ -111,7 +187,6 @@ try {
 
     $addresses = @(Get-AddressRange -From $First -To $Last)
     $sent = (Get-Item $payload).Length
-    $results = @()
 
     foreach ($pass in 1..$Repeat) {
         if ($Repeat -gt 1) { Write-Host "`nPass $pass of $Repeat" -ForegroundColor Cyan }
@@ -122,14 +197,24 @@ try {
                 Pass = $pass; Server = $address; ReadMBs = $null; WriteMBs = $null; File = ''; Note = ''
             }
 
-            if (-not (Test-Path -LiteralPath $root)) {
-                $row.Note = 'not reachable'
+            Write-Host ("{0,-16} " -f $address) -NoNewline
+
+            if (-not (Test-SmbPort -Address $address)) {
+                $row.Note = 'no answer on port 445'
                 $results += $row
-                Write-Host ("{0,-16} unreachable" -f $address) -ForegroundColor DarkYellow
+                Write-Host 'unreachable' -ForegroundColor DarkYellow
+                continue
+            }
+
+            if (-not (Test-Path -LiteralPath $root)) {
+                $row.Note = 'share not found'
+                $results += $row
+                Write-Host 'share not found' -ForegroundColor DarkYellow
                 continue
             }
 
             # --- write ---
+            Write-Host 'writing... ' -NoNewline -ForegroundColor DarkGray
             try {
                 $seconds = Invoke-TimedCopy -SourceDir $scratch -FileName $payloadName -DestDir $root
                 if ($seconds -gt 0) {
@@ -148,35 +233,47 @@ try {
             }
 
             # --- read ---
-            $source = Find-ReadSource -Root $root -MinBytes $minBytes
-            if ($null -eq $source) {
-                $row.Note = Add-Note $row.Note "nothing of $SizeMB MB or more here to read"
+            $source = $null
+            if ($ReadFile) {
+                $named = Join-Path $root $ReadFile
+                if (Test-Path -LiteralPath $named -PathType Leaf) {
+                    $source = Get-Item -LiteralPath $named
+                }
+                else {
+                    $row.Note = Add-Note $row.Note "no $ReadFile here"
+                }
             }
             else {
-                $row.File = $source.Name
-                $local = Join-Path $landing $source.Name
-                Remove-Item -LiteralPath $local -Force -ErrorAction SilentlyContinue
+                Write-Host 'scanning... ' -NoNewline -ForegroundColor DarkGray
+                $source = Find-ReadSource -Root $root -MinBytes $minBytes -MaxBytes $capBytes
+                if ($null -eq $source) {
+                    $row.Note = Add-Note $row.Note "nothing of $SizeMB MB or more here to read"
+                }
+            }
 
+            if ($source) {
+                $row.File = $source.Name
+                $sizeMBofFile = [math]::Round($source.Length / 1MB)
+                Write-Host ("reading {0} ({1} MB)... " -f $source.Name, $sizeMBofFile) -NoNewline -ForegroundColor DarkGray
                 try {
-                    $seconds = Invoke-TimedCopy -SourceDir $source.DirectoryName -FileName $source.Name -DestDir $landing
-                    if ($seconds -gt 0) {
-                        $row.ReadMBs = [math]::Round(($source.Length / 1MB) / $seconds)
+                    $read = Measure-Read -Source $source -Landing $landing -CapBytes $capBytes
+                    if ($null -eq $read) {
+                        $row.Note = Add-Note $row.Note 'read failed'
                     }
                     else {
-                        $row.Note = Add-Note $row.Note 'read failed'
+                        $row.ReadMBs = $read.MBs
+                        if ($read.Partial) {
+                            $row.Note = Add-Note $row.Note "read first $MaxReadMB MB of $sizeMBofFile MB"
+                        }
                     }
                 }
                 catch {
                     $row.Note = Add-Note $row.Note "read: $($_.Exception.Message)"
                 }
-                finally {
-                    Remove-Item -LiteralPath $local -Force -ErrorAction SilentlyContinue
-                }
             }
 
             $results += $row
-            Write-Host ("{0,-16} read {1,6} MB/s   write {2,6} MB/s   {3}" -f `
-                $address, $row.ReadMBs, $row.WriteMBs, $row.File)
+            Write-Host ("read {0,6} MB/s   write {1,6} MB/s   {2}" -f $row.ReadMBs, $row.WriteMBs, $row.Note)
         }
     }
 }
@@ -199,6 +296,14 @@ if ($reads.Count -gt 1) {
     }
     else {
         Write-Host 'Reads are even across the row.' -ForegroundColor Green
+    }
+
+    if (-not $ReadFile) {
+        $files = @($results | Where-Object { $_.File } | Select-Object -ExpandProperty File -Unique)
+        if ($files.Count -gt 1) {
+            Write-Host "`nEach server was read against a different file, so these are not strictly comparable." -ForegroundColor DarkYellow
+            Write-Host 'Pass -ReadFile with a path that exists on all of them to compare like with like.' -ForegroundColor DarkGray
+        }
     }
 }
 
