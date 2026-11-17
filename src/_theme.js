@@ -6,7 +6,7 @@
   Markup expected somewhere on the page:
     <div class="theme-toggle">
       <span id="themeLabel">Day</span>
-      <div class="theme-switch" id="themeSwitch"></div>
+      <div class="theme-switch" id="themeSwitch"></div>   (the dot; the whole .theme-toggle pill is the control)
     </div>
 
   This script is intentionally NOT deferred/async: placed in <head>, it runs
@@ -39,9 +39,11 @@
   applyTheme((forced || stored) === 'day' ? 'day' : 'night');
 
   document.addEventListener('DOMContentLoaded', function () {
-    var sw = document.getElementById('themeSwitch');
-    if (!sw) return;
-    // a11y: the switch is a bare <div>; make it a real keyboard-operable control so
+    var dot = document.getElementById('themeSwitch');
+    if (!dot) return;
+    // The whole pill (.theme-toggle: dot + label) is the control, not just the dot.
+    var sw = dot.closest('.theme-toggle') || dot;
+    // a11y: the pill is a bare <div>; make it a real keyboard-operable control so
     // screen-reader + keyboard users can toggle the theme and hear its state.
     if (!sw.hasAttribute('role')) sw.setAttribute('role', 'switch');
     if (!sw.hasAttribute('tabindex')) sw.setAttribute('tabindex', '0');
