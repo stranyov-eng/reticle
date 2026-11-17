@@ -1900,7 +1900,8 @@ function drawReport() {
 
   ctx.fillStyle = colour.ink;
   ctx.font = sans(17, 700);
-  ctx.fillText(t('netReportTitle'), pad, 38);
+  const title = appVersion ? `${t('netReportTitle')}  ${appVersion}` : t('netReportTitle');
+  ctx.fillText(title, pad, 38);
 
   // Parameters belong in the file: a number without its test settings is
   // not a measurement, it is a rumour.
@@ -2945,6 +2946,15 @@ applyLinkChoice();
 renderNetPresetPicker(localStorage.getItem(NET_ACTIVE_KEY) || '');
 
 applyStaticStrings();
+
+/** Which build this is, shown by the wordmark and carried into the report. */
+let appVersion = '';
+invoke('app_version')
+  .then((v) => {
+    appVersion = v || '';
+    $('appVersion').textContent = appVersion;
+  })
+  .catch(() => { /* outside the app shell there is no version to show */ });
 renderPresets();
 renderHistory();
 renderNetTable();

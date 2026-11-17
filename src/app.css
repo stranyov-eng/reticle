@@ -79,6 +79,20 @@ body {
   margin-right: 6px;
 }
 
+/* Which build this is — needed the moment a report is sent to somebody, and
+ * until now only the installer knew. Deliberately quiet: it is a fact to look
+ * up, not a thing to read every time. */
+.brand .version {
+  margin-left: 7px;
+  font-family: var(--mono);
+  font-size: var(--fs-badge);
+  font-weight: var(--fw-regular);
+  letter-spacing: 0;
+  color: var(--dimmer);
+  vertical-align: 1px;
+}
+.brand .version:empty { display: none; }
+
 .btn {
   font-family: var(--font);
   font-size: var(--fs-button);

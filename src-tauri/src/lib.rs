@@ -189,6 +189,16 @@ struct Interface {
 
 /// Network interfaces of the machine — for the dropdown when adding a source.
 ///
+/// Which build is running.
+///
+/// Taken from `Cargo.toml` at compile time, so it cannot drift from the
+/// installer that produced the binary — and the exported report carries it,
+/// because a measurement sent to someone else should say what took it.
+#[tauri::command]
+fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 /// On site a machine usually has several adapters, and the multicast
 /// subscription goes to whichever address is chosen — so choosing blind is not
 /// an option.
@@ -552,6 +562,7 @@ pub fn run() {
             get_spark,
             sparks,
             dmx_frame,
+            app_version,
             list_interfaces,
             save_text,
             open_text,
