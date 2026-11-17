@@ -151,6 +151,8 @@ const I18N = {
     guideHint: 'Open the guide (F1)',
     guideEyebrow: 'Guide',
     guideLead: 'A protocol monitor for AV work: OSC, sACN and raw UDP on several ports at once, an HTTP client for poking show hardware, and throughput testing across file shares. Hover a clip to preview it, click to enlarge.',
+    httpGroupRequest: 'Request',
+    httpGroupPresets: 'Presets',
     netGroupPreset: 'Preset',
     netGroupTest: 'Measurement',
     netGroupExpect: 'Expected',
@@ -209,6 +211,11 @@ const I18N = {
     addressCount: (n) => `${n} ${n === 1 ? 'address' : 'addresses'}`,
     shownCount: (n) => `${n} shown`,
     bytes: (n) => `<${n} bytes>`,
+    logT: 't, s',
+    logSrc: 'src',
+    logPath: 'address',
+    logArgs: 'arguments',
+    logFrom: 'from',
     logTruncated: (n) => `… ${n} messages not shown (stream is faster than the log can draw)`,
     packets: (n) => `${n} pkt`,
     nonOsc: (n) => `${n} non-OSC`,
@@ -627,7 +634,10 @@ function refreshDetailValues(sparkData) {
   if (!row || $('detail').hidden) return;
 
   const cards = $('detailSlots').children;
-  row.slots.forEach((_, i) => {
+  // The slot was being thrown away into `_` while the body below used a `slot`
+  // that did not exist — so this threw on the first card every tick, and the
+  // detail panel's numbers and graphs silently stopped updating.
+  row.slots.forEach((slot, i) => {
     const card = cards[i];
     if (!card) return;
 
@@ -722,7 +732,13 @@ function appendLog(batch) {
     args.className = 'log-args';
     args.textContent = m.args.map(fmtValue).join('  ');
 
-    div.append(time, src, path, args);
+    // Who sent it. Two consoles on one address look identical without this,
+    // and the backend has carried it all along.
+    const from = document.createElement('span');
+    from.className = 'log-from';
+    from.textContent = m.from || '';
+
+    div.append(time, src, path, args, from);
     frag.appendChild(div);
   }
 
@@ -773,10 +789,15 @@ function renderSources() {
     if (s.dropped > 0) bits.push(t('droppedCount', s.dropped));
     meta.textContent = bits.join(' · ');
 
-    const x = document.createElement('span');
+    // A real button, not a span with a click handler: this one stops a
+    // listener, and it should be reachable from the keyboard and announced as
+    // the control it is.
+    const x = document.createElement('button');
+    x.type = 'button';
     x.className = 'x';
     x.textContent = '×';
     x.title = t('removeSource');
+    x.setAttribute('aria-label', t('removeSource'));
     x.onclick = () => removeSource(s.id);
 
     chip.append(dot, kind, label, meta, x);
@@ -901,14 +922,23 @@ $('filter').oninput = (e) => {
   scheduleRender();
 };
 
-for (const tab of document.querySelectorAll('.tab')) {
-  tab.onclick = () => {
-    for (const other of document.querySelectorAll('.tab')) other.classList.toggle('is-active', other === tab);
-    for (const view of document.querySelectorAll('.view')) {
-      view.classList.toggle('is-active', view.id === 'view-' + tab.dataset.tab);
-    }
-  };
+/** Tabs that the address filter actually applies to. */
+const FILTERED_TABS = new Set(['addrs', 'log']);
+
+function showTab(tab) {
+  for (const other of document.querySelectorAll('.tab')) other.classList.toggle('is-active', other === tab);
+  for (const view of document.querySelectorAll('.view')) {
+    view.classList.toggle('is-active', view.id === 'view-' + tab.dataset.tab);
+  }
+  // The filter searches OSC addresses. On DMX, HTTP and Network it matched
+  // nothing and did nothing, while still inviting people to type in it.
+  $('filter').parentElement.hidden = !FILTERED_TABS.has(tab.dataset.tab);
 }
+
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.onclick = () => showTab(tab);
+}
+showTab(document.querySelector('.tab.is-active') || document.querySelector('.tab'));
 
 // Silence must keep ticking even when no data arrives — otherwise an address
 // that went quiet looks alive until the next snapshot.
@@ -937,7 +967,8 @@ function renderUniStrip() {
     let chip = uniChips.get(key);
 
     if (!chip) {
-      chip = document.createElement('div');
+      chip = document.createElement('button');
+      chip.type = 'button';
       chip.className = 'uni-chip';
       chip.innerHTML = '<span class="uni-n"></span><span class="uni-meta"></span>';
       chip.onclick = () => {

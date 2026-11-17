@@ -120,11 +120,21 @@
   </main>
 
   <main class="view" id="view-log">
+    <!-- The log had no headings at all: four unlabelled columns of numbers,
+         and the sender was in the data but never shown. -->
+    <div class="log-head">
+      <span class="log-t" data-i18n="logT">t, s</span>
+      <span class="log-src" data-i18n="logSrc">src</span>
+      <span class="log-path" data-i18n="logPath">address</span>
+      <span class="log-args" data-i18n="logArgs">arguments</span>
+      <span class="log-from" data-i18n="logFrom">from</span>
+    </div>
     <div class="log" id="logBody"></div>
   </main>
 
   <main class="view" id="view-http">
     <form class="http-bar" id="httpForm">
+      <span class="bar-group-lbl" data-i18n="httpGroupRequest">Request</span>
       <select id="hMethod">
         <option>GET</option>
         <option>POST</option>
@@ -140,6 +150,7 @@
     </form>
 
     <div class="preset-bar">
+      <span class="bar-group-lbl" data-i18n="httpGroupPresets">Presets</span>
       <div class="presets" id="presetStrip"></div>
       <input type="text" id="presetName" data-i18n-placeholder="presetNameHint" placeholder="preset name" />
       <button class="btn" type="button" id="presetSave" data-i18n="savePreset">Save</button>
@@ -181,8 +192,8 @@
 
   <main class="view" id="view-net">
     <div class="net-bar">
-      <div class="net-group">
-      <span class="net-group-lbl" data-i18n="netGroupPreset">Preset</span>
+      <div class="bar-group">
+      <span class="bar-group-lbl" data-i18n="netGroupPreset">Preset</span>
       <!-- no inline label: the group heading above already says Preset -->
       <label class="net-opt">
         <select id="netPreset"><option value="" data-i18n="netPresetNone">— none —</option></select>
@@ -192,8 +203,8 @@
       <button class="btn" type="button" id="netPresetDelete" data-i18n="netPresetDelete">Delete</button>
       </div>
 
-      <div class="net-group">
-      <span class="net-group-lbl" data-i18n="netGroupTest">Measurement</span>
+      <div class="bar-group">
+      <span class="bar-group-lbl" data-i18n="netGroupTest">Measurement</span>
       <label class="net-opt"><span data-i18n="netSize">Size</span>
         <select id="netSize">
           <option value="128">128 MB</option>
@@ -237,8 +248,8 @@
       </label>
       </div>
 
-      <div class="net-group">
-      <span class="net-group-lbl" data-i18n="netGroupExpect">Expected</span>
+      <div class="bar-group">
+      <span class="bar-group-lbl" data-i18n="netGroupExpect">Expected</span>
       <label class="net-opt"><span data-i18n="netLink">Link</span>
         <select id="netLink">
           <option value="1">1 GbE</option>
@@ -255,8 +266,8 @@
       </label>
       </div>
 
-      <div class="net-group">
-      <span class="net-group-lbl" data-i18n="netGroupRun">Actions</span>
+      <div class="bar-group">
+      <span class="bar-group-lbl" data-i18n="netGroupRun">Actions</span>
       <button class="btn btn-action" type="button" id="netRun" data-i18n="netRun">Run</button>
       <button class="btn" type="button" id="netStop" data-i18n="netStop" disabled>Stop</button>
       <button class="btn" type="button" id="netAdd" data-i18n="netAdd">+ target</button>

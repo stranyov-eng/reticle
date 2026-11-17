@@ -50,7 +50,9 @@ export default {
         await hold(400);
         await setSel(page, '#fKind', 'osc-udp', 700);
         await sleep(300);
-        await typeInto(page, '#fPort', '9000', 500);
+        // No Enter: in a form field it submits, which closes the form and ends the
+        // clip three steps early.
+        await typeInto(page, '#fPort', '9000', 500, { enter: false });
         await sleep(300);
         // The adapter, not 0.0.0.0 — the point the card makes.
         await clickEl(page, '#fBind + .combo-btn', 700);

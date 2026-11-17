@@ -17,6 +17,9 @@
   --fs-badge: 12px;
   --row-pad: 5px 10px;
   --ctl-pad: 6px 11px;
+  /* Fixed table columns scale with the text size; a fixed layout cannot
+     absorb a bigger font the way an automatic one does. */
+  --col-scale: 1;
 }
 :root[data-size="s"] {
   --fs-display: 17px;
@@ -29,6 +32,7 @@
   --fs-badge: 10px;
   --row-pad: 3px 8px;
   --ctl-pad: 4px 9px;
+  --col-scale: 0.88;
 }
 :root[data-size="l"] {
   --fs-display: 24px;
@@ -41,9 +45,17 @@
   --fs-badge: 14px;
   --row-pad: 7px 12px;
   --ctl-pad: 8px 13px;
+  --col-scale: 1.18;
 }
 
 * { box-sizing: border-box; }
+
+/* Any rule that sets `display` on a class outbids the `hidden` attribute, so
+ * every such class needed its own [hidden] companion and .src-form never got
+ * one — the add-source form sat open on every tab, permanently. One rule for
+ * the whole stylesheet instead of one per class, which is the only version of
+ * this that cannot be forgotten next time. */
+[hidden] { display: none !important; }
 
 html, body {
   height: 100%;
@@ -55,9 +67,15 @@ html, body {
   overflow: hidden;
 }
 
+/* A column, not a grid with a counted template. The template was
+ * `auto auto auto 1fr auto` — five rows for five children — so it only worked
+ * while exactly one of them was the view and none of the others were hidden.
+ * The moment the source form closed, the 1fr landed on the status bar and the
+ * view collapsed to the height of its contents. Here the active view simply
+ * says it is the one that stretches. */
 body {
-  display: grid;
-  grid-template-rows: auto auto auto 1fr auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .grow { flex: 1; }
@@ -196,7 +214,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .src-chip.is-silent .dot { background: var(--dimmer); }
 .src-chip .kind { color: var(--dim); text-transform: uppercase; letter-spacing: var(--tk-label); }
 .src-chip .meta { color: var(--dim); }
-.src-chip .x { cursor: pointer; color: var(--dim); font-size: 1.2em; line-height: 1; }
+/* Now a real <button>, so it needs the browser chrome taken off it. */
+.src-chip .x { cursor: pointer; color: var(--dim); font-size: 1.2em; line-height: 1; background: none; border: none; padding: 0 2px; font-family: inherit; }
 .src-chip .x:hover { color: var(--danger); }
 
 /* ---- source form ---- */
@@ -257,8 +276,15 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 
 /* ---- views ---- */
 .view { display: none; overflow: auto; position: relative; }
-.view.is-active { display: block; }
-#view-http.is-active { display: grid; grid-template-rows: auto auto auto auto 1fr; }
+/* min-height:0 so a scrolling child can actually scroll instead of pushing the
+   column taller than the window. */
+.view.is-active { display: block; flex: 1; min-height: 0; }
+/* A column, not a counted grid template: the result pane and the history are
+   both optional, and a template that assumes a fixed number of children breaks
+   the moment one of them is hidden. */
+#view-http.is-active { display: flex; flex-direction: column; }
+.http-panes { flex: 0 1 auto; min-height: 0; }
+.http-result { flex: 2 1 0; }
 
 /* ---- address view: table plus the detail panel ---- */
 #view-addrs.is-active { display: grid; grid-template-rows: 1fr auto; overflow: hidden; }
@@ -270,7 +296,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   max-height: 42vh;
   overflow: auto;
 }
-.detail[hidden] { display: none; }
 .detail-head {
   display: flex;
   align-items: center;
@@ -322,7 +347,17 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .range-row .btn { padding: 3px 8px; }
 
 /* ---- address table ---- */
-.addr-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: var(--fs-input); }
+/* Fixed layout, for the reason the network table has it: with auto layout the
+ * browser re-measures every column each time a value changes, and these values
+ * change thirty times a second — the whole table shimmered sideways. Widths
+ * come from the header row and stay put. */
+.addr-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: var(--fs-input);
+}
 .addr-table thead th {
   position: sticky;
   top: 0;
@@ -348,9 +383,21 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   line-height: 1.45;
 }
 .addr-table tbody tr:hover td { background: var(--panel2); }
-.col-src { width: 64px; }
-.col-path { width: 32%; }
-.col-type { width: 56px; }
+/* Every column is declared: a fixed layout hands anything left out whatever
+ * remains, which is how one unnamed column ends up owning half the table. The
+ * numeric ones scale with the text-size tier, as the buttons do. */
+/* All twelve are given a width. With a fixed layout any slack is shared out in
+ * proportion to these, so they behave as weights and the table keeps its
+ * balance at any window size — whereas one `auto` column swallows the lot. */
+.col-src { width: calc(60px * var(--col-scale)); }
+.col-path { width: calc(300px * var(--col-scale)); }
+.col-type { width: calc(50px * var(--col-scale)); }
+.addr-table th.num { width: calc(90px * var(--col-scale)); }
+/* A string value needs more room than a float, and strings are what get cut. */
+.addr-table th[data-i18n="colValue"] { width: calc(140px * var(--col-scale)); }
+.addr-table th[data-i18n="colDt"] { width: calc(150px * var(--col-scale)); }
+.addr-table th[data-i18n="colSilence"] { width: calc(95px * var(--col-scale)); }
+.addr-table td { overflow: hidden; text-overflow: ellipsis; }
 
 .addr-table td.col-path { color: var(--ink); }
 .addr-table td.col-src { color: var(--dim); }
@@ -370,18 +417,38 @@ tr.is-silent td.silence { color: var(--danger); }
 
 .addr-table tbody tr.is-selected td { background: var(--panel2); }
 .addr-table tbody tr { cursor: pointer; }
-.col-spark { width: 96px; }
+.col-spark { width: calc(110px * var(--col-scale)); }
 .addr-table td.spark { padding: 2px 8px; }
 .addr-table td.spark canvas { display: block; }
 
 /* ---- log ---- */
 .log { font-family: var(--mono); font-size: var(--fs-input); padding: 6px 0; }
-.log-row { display: flex; gap: 14px; padding: 2px 12px; line-height: 1.5; }
+.log-row, .log-head { display: flex; gap: 14px; padding: 2px 12px; line-height: 1.5; }
 .log-row:hover { background: var(--panel2); }
-.log-t { color: var(--dimmer); width: 90px; flex: none; text-align: right; }
-.log-src { color: var(--dim); width: 52px; flex: none; }
-.log-path { color: var(--ink); min-width: 220px; }
-.log-args { color: var(--dim); }
+/* The same column rhythm as the tables' headers, so the log reads as one of
+   them rather than as a dump that happens to line up. */
+.log-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line2);
+  font-family: var(--font);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tk-label);
+  color: var(--dim);
+}
+.log-t { color: var(--dimmer); width: calc(92px * var(--col-scale)); flex: none; text-align: right; }
+.log-src { color: var(--dim); width: calc(54px * var(--col-scale)); flex: none; }
+.log-path { color: var(--ink); width: calc(260px * var(--col-scale)); flex: none; overflow: hidden; text-overflow: ellipsis; }
+.log-args { color: var(--dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Who sent it — dimmed, because it is the answer to a question you only ask
+   when two senders are in play. */
+.log-from { color: var(--dimmer); width: calc(170px * var(--col-scale)); flex: none; text-align: right; }
+.log-head .log-t, .log-head .log-from { color: var(--dim); }
 .log-note { color: var(--danger); padding: 3px 12px; }
 
 /* ---- DMX ---- */
@@ -395,6 +462,9 @@ tr.is-silent td.silence { color: var(--danger); }
   border-bottom: 1px solid var(--line);
 }
 .uni-chip {
+  /* a <button> inherits neither the page font nor its colour */
+  font: inherit;
+  color: var(--ink);
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -491,13 +561,13 @@ tr.is-silent td.silence { color: var(--danger); }
    fifteen controls, which is fine once you know it and unreadable before that.
    The label takes a full line of the group's flex row, so the controls below it
    need no wrapper of their own. */
-.net-group {
+.bar-group {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
-.net-group-lbl {
+.bar-group-lbl {
   flex: 0 0 100%;
   font-family: var(--font);
   font-size: 9px;
@@ -507,7 +577,7 @@ tr.is-silent td.silence { color: var(--danger); }
 }
 /* A hairline where one group ends and the next begins — the same device the
    topbar uses, rather than relying on the gap alone. */
-.net-group + .net-group { border-left: 1px solid var(--line); padding-left: 18px; }
+.bar-group + .bar-group { border-left: 1px solid var(--line); padding-left: 18px; }
 .net-opt {
   display: flex;
   align-items: center;
@@ -527,7 +597,6 @@ tr.is-silent td.silence { color: var(--danger); }
   color: var(--frame-active);
   background: var(--panel2);
 }
-.net-warn[hidden] { display: none; }
 /* a combination that can report a number which never left this machine */
 .net-warn.is-trap { color: var(--danger); }
 
@@ -543,7 +612,6 @@ tr.is-silent td.silence { color: var(--danger); }
   border-bottom: 1px solid var(--line);
   background: var(--panel2);
 }
-.net-prog[hidden] { display: none; }
 .net-prog-track {
   flex: 1;
   height: 4px;
@@ -615,9 +683,8 @@ tr.is-silent td.silence { color: var(--danger); }
  * one left out would be handed whatever is left over. The widths scale with the
  * text-size tier, or the large setting would push headings out of their cells —
  * which a fixed layout has no way to absorb. */
-.net-table { --col-scale: 1; }
-:root[data-size="s"] .net-table { --col-scale: 0.88; }
-:root[data-size="l"] .net-table { --col-scale: 1.18; }
+/* Defined once at the root, in the size-tier block below, so both fixed-layout
+   tables scale from the same number rather than each keeping its own. */
 
 /* The target is the column that gives: every other one holds a value whose
  * width is known, so they are fixed and the path takes whatever is left. */
@@ -663,6 +730,7 @@ tr.is-silent td.silence { color: var(--danger); }
 
 /* ---- HTTP ---- */
 .http-bar {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -794,16 +862,21 @@ tr.is-silent td.silence { color: var(--danger); }
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
 }
-.pane { display: flex; flex-direction: column; gap: 5px; }
+.pane { display: flex; flex-direction: column; gap: 5px; min-height: 0; }
+/* The same quiet small-caps as the group headings elsewhere, rather than a
+   second, slightly different label style for the same job. */
 .pane-label {
-  font-size: var(--fs-label);
+  font-family: var(--font);
+  font-size: 9px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: var(--tk-label);
-  color: var(--dim);
+  color: rgba(var(--ink-rgb), 0.28);
 }
-.pane textarea { height: 92px; resize: vertical; line-height: 1.5; }
+/* Grows with the window but stops: a request form is not improved by a
+   nine-hundred-pixel text box, and the slack belongs to the response. */
+.pane textarea { flex: 1; min-height: 92px; max-height: 240px; resize: vertical; line-height: 1.5; }
 
-.http-result { padding: 10px 12px; overflow: auto; }
+.http-result { padding: 10px 12px; overflow: auto; min-height: 0; }
 .http-status {
   font-family: var(--mono);
   font-size: var(--fs-input);
@@ -864,7 +937,6 @@ tr.is-silent td.silence { color: var(--danger); }
   pointer-events: none;
 }
 .empty button { pointer-events: auto; }
-.empty[hidden] { display: none; }
 
 /* ---- status bar ---- */
 .statusbar {
@@ -960,7 +1032,6 @@ tr.is-silent td.silence { color: var(--danger); }
   border-top: 1px solid var(--line2);
   background: var(--panel2);
 }
-.net-findings[hidden] { display: none; }
 .net-findings h4 {
   margin: 0 0 6px;
   font-size: var(--fs-label);

@@ -299,6 +299,21 @@ never give twice running. See [`scripts/guide-clips`](scripts/guide-clips).
 A card without a clip renders as text and reads perfectly well, so nothing in
 the guide waits on a recording.
 
+## Auditing the interface
+
+```bash
+node scripts/ui-audit.mjs
+```
+
+Drives every tab headlessly against the clip fixture and checks what it finds —
+a hundred and twenty-odd assertions, and a non-zero exit if any fail. It exists
+because a screenshot only catches what someone remembers to look at. Among the
+things it asserts: exactly one view is active, the status bar sits on the last
+line of the window, the filter appears only where it filters something, table
+columns hold still while values change, nothing is clipped at any of the three
+text sizes in either theme, and **nothing threw** — the first run reported five
+uncaught exceptions and would otherwise have passed.
+
 ## Testing without hardware
 
 Traffic generators are included:
