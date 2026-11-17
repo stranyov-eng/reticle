@@ -100,6 +100,7 @@ const I18N = {
     netEmptyTitle: 'No targets yet.',
     netWriteWarning: 'Write mode creates temporary files in each folder and deletes them afterwards.',
     netRoundWarning: 'Writes temporary files, reads them straight back, then deletes them. Every server is measured against identical files — but the server still holds what was just written in its RAM, so this is the speed of the path, not of the array.',
+    netRoundBufferedWarning: 'Cache bypass is off while reading back a file this machine wrote a second ago — which it may still be holding in its own RAM, so the read figure can be one that never crossed the network. For the buffered half of a comparison use Read mode against real media instead.',
     netPathHint: '\\\\192.168.2.11\\share\\folder',
     netBrowse: 'Browse',
     netRemove: 'Remove target',
@@ -136,6 +137,7 @@ const I18N = {
     netFindRetransNone: 'No retransmissions worth speaking of, so every packet is arriving first time. A clean wire that still crawls points at configuration or at the far side\'s disk, not at the cable.',
     netFindBypassCompare: (names, from, to) => `With the cache in play ${names} read at ${to} MB/s against ${from} unbuffered. The wire can clearly carry it, so what is slow is the unbuffered path — on SMB that means the server\'s own disk read, not the network.`,
     netFindBypassHintTry: 'Run this again with "Bypass cache" off: if the slow ones speed up, the link is fine and the far side\'s disk is the bottleneck.',
+    netFindBypassHintRead: 'To try the same targets with the cache in play, switch to Read mode against real media and turn "Bypass cache" off. Doing it in this mode would read back a file this machine just wrote, which it may still hold in RAM — a figure that never crosses the network.',
     netFindOneStream: 'One stream measures one stream. A single SMB connection runs out of a CPU core long before it runs out of 10 GbE — raise it to 4 or 8 before reading anything into these numbers.',
     netFindAllWell: (lo, hi) => `Nothing stands out — ${lo}–${hi} MB/s across the board.`,
     netFileSize: (name, mb) => `${name} — ${mb} MB`,
@@ -1370,8 +1372,19 @@ function applyLinkChoice() {
  *  any one result, so it is said once above the table rather than per row. */
 function paintNetWarn() {
   const mode = $('netMode').value;
-  $('netWarn').hidden = mode === 'read';
-  $('netWarn').textContent = mode === 'roundtrip' ? t('netRoundWarning') : t('netWriteWarning');
+  const warn = $('netWarn');
+  warn.hidden = mode === 'read';
+  warn.classList.toggle('is-trap', mode === 'roundtrip' && !$('netBypass').checked);
+
+  if (mode !== 'roundtrip') {
+    warn.textContent = t('netWriteWarning');
+    return;
+  }
+
+  // Reading back what you just wrote, with the cache left in place, can be
+  // served entirely from this machine's own RAM. That number is not wrong by a
+  // little, it is a measurement of nothing, so it gets said plainly.
+  warn.textContent = $('netBypass').checked ? t('netRoundWarning') : t('netRoundBufferedWarning');
 }
 
 /** Keep the tail of a path, which is the part that identifies it. */
@@ -1653,8 +1666,11 @@ function diagnose(rows, opts, previous) {
     out.push({ tone: 'hint', text: t('netFindRetransNone') });
   }
 
-  // The decisive comparison, when the same targets have been run both ways.
-  if (previous && previous.mode === opts.mode && previous.bypass !== opts.bypass_cache) {
+  // The decisive comparison, when the same targets have been run both ways —
+  // but never for the round trip, where the buffered half can be served from
+  // this machine's own RAM and so compares a real figure against a fiction.
+  const comparable = opts.mode !== 'roundtrip';
+  if (comparable && previous && previous.mode === opts.mode && previous.bypass !== opts.bypass_cache) {
     const gained = usable.filter((r) => {
       const was = previous.reads[r.id];
       return r.read && was && (opts.bypass_cache ? was / r.read : r.read / was) >= FIND.bypassGain;
@@ -1676,7 +1692,10 @@ function diagnose(rows, opts, previous) {
   } else if (slow.length && opts.bypass_cache && !wireAtFault) {
     // Pointless advice while packets are being lost: the cache is not what is
     // slowing a link that cannot deliver a packet first time.
-    out.push({ tone: 'hint', text: t('netFindBypassHintTry') });
+    out.push({
+      tone: 'hint',
+      text: comparable ? t('netFindBypassHintTry') : t('netFindBypassHintRead'),
+    });
   }
 
   return out;
@@ -2145,9 +2164,10 @@ $('netThreads').onchange = () => {
   $('netNote').textContent = Number($('netThreads').value) === 1 ? t('netOneStream') : '';
 };
 
-$('netMode').onchange = () => {
-  paintNetWarn();
-};
+// Both of these change which caveat applies, so both repaint it. The loop
+// below wraps these handlers rather than replacing them.
+$('netMode').onchange = paintNetWarn;
+$('netBypass').onchange = paintNetWarn;
 
 $('netLink').onchange = applyLinkChoice;
 

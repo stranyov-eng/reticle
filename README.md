@@ -240,6 +240,27 @@ Produces three artifacts:
 Builds are unsigned: on first launch Windows shows SmartScreen
 ("More info" → "Run anyway").
 
+### Checking the tool itself
+
+`scripts/smb-check.ps1` measures the same shares using nothing but robocopy and
+the system clock. It exists because a figure from this app may end up as the
+reason somebody is told their network is misconfigured, and before that happens
+it is worth confirming with code from outside this repository.
+
+```powershell
+.\scripts\smb-check.ps1 -First 192.168.2.11 -Last 192.168.2.19 -Share 'share\project\objects' -Repeat 3
+```
+
+It writes an incompressible file to each share and times it, then reads an
+*existing* file back and times that. Existing on purpose: a file this machine
+wrote a second ago is still in this machine's RAM, and reading it back would
+measure that rather than the network. `-Repeat` separates a server that is
+always slow — configuration — from one that is sometimes slow, which is
+contention or an intermittent fault, and a different culprit.
+
+Same answer from both tools means the network. A disagreement means this app,
+and is worth reporting.
+
 ## Testing without hardware
 
 Traffic generators are included:

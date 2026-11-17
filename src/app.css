@@ -492,6 +492,8 @@ tr.is-silent td.silence { color: var(--danger); }
   background: var(--panel2);
 }
 .net-warn[hidden] { display: none; }
+/* a combination that can report a number which never left this machine */
+.net-warn.is-trap { color: var(--danger); }
 
 /* ---- progress of a run ----
  * A 512 MB read can take most of a minute. Without this the table sits on

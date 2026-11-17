@@ -1,0 +1,208 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Measure SMB read and write speed across a row of servers using nothing but
+    what ships with Windows.
+
+.DESCRIPTION
+    Reticle measures with its own I/O loop. Before its numbers are used to tell
+    somebody their network is misconfigured, they are worth confirming with code
+    that nobody in this room wrote: robocopy moves the bytes, Stopwatch times
+    them, and this script performs no I/O of its own.
+
+    Writes send a locally generated, incompressible file to each share.
+
+    Reads pull an *existing* file back from each share — existing on purpose. A
+    file this machine has just written is still in this machine's own RAM, and
+    reading it back would measure that rather than the network. That is the one
+    real trap in this kind of test, and the reason the read half does not reuse
+    the file the write half just sent.
+
+    Nothing is left behind: the file written to each share is removed, including
+    after a failure.
+
+.PARAMETER Repeat
+    Run the whole row more than once. If the same servers are slow on every pass
+    it is configuration; if the slow ones move around it is contention or
+    something intermittent — different problems with different culprits.
+
+.EXAMPLE
+    .\smb-check.ps1 -First 192.168.2.11 -Last 192.168.2.19 -Share 'd3 Projects\01_ADNOC_National_Day_v01\objects' -Repeat 3
+#>
+
+param(
+    [Parameter(Mandatory = $true)] [string] $First,
+    [Parameter(Mandatory = $true)] [string] $Last,
+    [Parameter(Mandatory = $true)] [string] $Share,
+    [int] $SizeMB = 512,
+    [int] $Repeat = 1
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Get-AddressRange {
+    param([string] $From, [string] $To)
+
+    $a = $From.Split('.')
+    $b = $To.Split('.')
+    if ($a.Count -ne 4 -or $b.Count -ne 4) { throw 'Both ends must be IPv4 addresses.' }
+
+    $prefix = "$($a[0]).$($a[1]).$($a[2])"
+    if ($prefix -ne "$($b[0]).$($b[1]).$($b[2])") { throw 'Both ends must share the first three octets.' }
+
+    $lo = [int] $a[3]
+    $hi = [int] $b[3]
+    if ($lo -gt $hi) { throw 'The first address must come before the last.' }
+
+    $lo..$hi | ForEach-Object { "$prefix.$_" }
+}
+
+function Add-Note {
+    param([string] $Existing, [string] $Add)
+    if ([string]::IsNullOrWhiteSpace($Existing)) { return $Add }
+    return "$Existing; $Add"
+}
+
+# Robocopy, timed by us rather than parsed out of its own output: its wording is
+# localised and its summary is not worth depending on.
+function Invoke-TimedCopy {
+    param([string] $SourceDir, [string] $FileName, [string] $DestDir)
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    & robocopy $SourceDir $DestDir $FileName /R:0 /W:0 /NJH /NJS /NC /NS /NP /NFL /NDL | Out-Null
+    $code = $LASTEXITCODE
+    $sw.Stop()
+
+    # Robocopy reports 0-7 for success, 8 and above for failure.
+    if ($code -ge 8) { return $null }
+    return $sw.Elapsed.TotalSeconds
+}
+
+function Find-ReadSource {
+    param([string] $Root, [long] $MinBytes)
+
+    Get-ChildItem -LiteralPath $Root -File -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.Length -ge $MinBytes } |
+        Select-Object -First 1
+}
+
+$scratch = Join-Path $env:TEMP 'reticle-smb-check'
+$landing = Join-Path $scratch 'in'
+New-Item -ItemType Directory -Force -Path $scratch, $landing | Out-Null
+
+$payloadName = 'smb-check-payload.bin'
+$payload = Join-Path $scratch $payloadName
+$minBytes = [long] $SizeMB * 1MB
+
+try {
+    Write-Host "Building a $SizeMB MB incompressible payload..." -ForegroundColor DarkGray
+    $block = New-Object byte[] 4194304
+    $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+    $rng.GetBytes($block)
+
+    $stream = [System.IO.File]::Create($payload)
+    try {
+        $blocks = [math]::Max(1, [int] ($SizeMB / 4))
+        for ($i = 0; $i -lt $blocks; $i++) { $stream.Write($block, 0, $block.Length) }
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    $addresses = @(Get-AddressRange -From $First -To $Last)
+    $sent = (Get-Item $payload).Length
+    $results = @()
+
+    foreach ($pass in 1..$Repeat) {
+        if ($Repeat -gt 1) { Write-Host "`nPass $pass of $Repeat" -ForegroundColor Cyan }
+
+        foreach ($address in $addresses) {
+            $root = "\\$address\$Share"
+            $row = [pscustomobject] @{
+                Pass = $pass; Server = $address; ReadMBs = $null; WriteMBs = $null; File = ''; Note = ''
+            }
+
+            if (-not (Test-Path -LiteralPath $root)) {
+                $row.Note = 'not reachable'
+                $results += $row
+                Write-Host ("{0,-16} unreachable" -f $address) -ForegroundColor DarkYellow
+                continue
+            }
+
+            # --- write ---
+            try {
+                $seconds = Invoke-TimedCopy -SourceDir $scratch -FileName $payloadName -DestDir $root
+                if ($seconds -gt 0) {
+                    $row.WriteMBs = [math]::Round(($sent / 1MB) / $seconds)
+                }
+                else {
+                    $row.Note = Add-Note $row.Note 'write failed'
+                }
+            }
+            catch {
+                $row.Note = Add-Note $row.Note "write: $($_.Exception.Message)"
+            }
+            finally {
+                # Leftovers in a show folder are worse than a missing reading.
+                Remove-Item -LiteralPath (Join-Path $root $payloadName) -Force -ErrorAction SilentlyContinue
+            }
+
+            # --- read ---
+            $source = Find-ReadSource -Root $root -MinBytes $minBytes
+            if ($null -eq $source) {
+                $row.Note = Add-Note $row.Note "nothing of $SizeMB MB or more here to read"
+            }
+            else {
+                $row.File = $source.Name
+                $local = Join-Path $landing $source.Name
+                Remove-Item -LiteralPath $local -Force -ErrorAction SilentlyContinue
+
+                try {
+                    $seconds = Invoke-TimedCopy -SourceDir $source.DirectoryName -FileName $source.Name -DestDir $landing
+                    if ($seconds -gt 0) {
+                        $row.ReadMBs = [math]::Round(($source.Length / 1MB) / $seconds)
+                    }
+                    else {
+                        $row.Note = Add-Note $row.Note 'read failed'
+                    }
+                }
+                catch {
+                    $row.Note = Add-Note $row.Note "read: $($_.Exception.Message)"
+                }
+                finally {
+                    Remove-Item -LiteralPath $local -Force -ErrorAction SilentlyContinue
+                }
+            }
+
+            $results += $row
+            Write-Host ("{0,-16} read {1,6} MB/s   write {2,6} MB/s   {3}" -f `
+                $address, $row.ReadMBs, $row.WriteMBs, $row.File)
+        }
+    }
+}
+finally {
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "`n--- results ---" -ForegroundColor Cyan
+$results | Format-Table -AutoSize
+
+$reads = @($results | Where-Object { $_.ReadMBs } | Select-Object -ExpandProperty ReadMBs)
+if ($reads.Count -gt 1) {
+    $best = ($reads | Measure-Object -Maximum).Maximum
+    $slow = @($results | Where-Object { $_.ReadMBs -and $_.ReadMBs -lt ($best / 2) })
+
+    if ($slow.Count -gt 0) {
+        $names = ($slow | Select-Object -ExpandProperty Server -Unique) -join ', '
+        Write-Host "Slow on reads: $names (against $best MB/s elsewhere)." -ForegroundColor Yellow
+        Write-Host 'Measured by robocopy and the system clock, so this is not Reticle talking.' -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host 'Reads are even across the row.' -ForegroundColor Green
+    }
+}
+
+# Robocopy's own exit code would otherwise become the script's, and its "1"
+# means "files were copied" — success that looks like failure to everything
+# downstream.
+exit 0
