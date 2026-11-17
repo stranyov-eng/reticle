@@ -22,6 +22,7 @@
         {
           title: 'Add a source',
           hero: true,
+          clip: 'help/src-add.mp4', dur: '0:11',
           blurb: 'A source is one socket: a protocol, a port and the adapter to listen on. "+ source" opens the strip at the top; several sources run at once, each with its own protocol and port, and the address table merges them — the SRC column says which one a row arrived on. A UDP port has exactly one listener at a time, so while Reticle holds it the intended receiver will not see that traffic. That is a property of UDP, not of this app.'
         },
         {
@@ -46,10 +47,12 @@
         {
           title: 'The table, not the log',
           hero: true,
+          clip: 'help/addr-table.mp4', dur: '0:07',
           blurb: 'Protokol\'s main view is a message log, which answers "what arrived just now". On site the question is usually "what range does this value move in" and "why did it stop" — so the address table is the main view here and the log is secondary. One row per address, updated 30 times a second however fast the traffic is.'
         },
         {
           title: 'Statistics per slot',
+          clip: 'help/addr-detail.mp4', dur: '0:05',
           blurb: 'An address carrying three floats gets three independent sets of min / max / average. Aggregating them together would be meaningless: on /pos the X and Z of one message have nothing to do with each other. Click a row to open the detail panel and see each slot on its own.'
         },
         {
@@ -70,6 +73,7 @@
         },
         {
           title: 'Sparklines',
+          clip: 'help/addr-detail.mp4', dur: '0:05',
           blurb: 'A history thumbnail on each row, and a larger graph per argument slot in the detail panel. History is fetched in one batched call at 5 Hz rather than a request per row per frame, so a table of 200 addresses costs the same as a table of five.'
         }
       ]},
@@ -78,6 +82,7 @@
         {
           title: 'Universe strip and channel grid',
           hero: true,
+          clip: 'help/dmx-grid.mp4', dur: '0:07',
           blurb: 'Each cell carries the channel number, the current value and min-max over time, and the fill follows brightness — so the grid reads as a lighting picture rather than a table of numbers. Only the universe currently open is pulled from the backend; the rest cost nothing.'
         },
         {
@@ -98,6 +103,7 @@
         {
           title: 'A REST client that is not the browser',
           hero: true,
+          clip: 'help/http-send.mp4', dur: '0:11',
           blurb: 'GET, POST, PUT, PATCH, DELETE, HEAD and OPTIONS with arbitrary headers and body. Requests are issued from the Rust side rather than the webview, so there is no CORS, any header is allowed, and a self-signed certificate can be accepted with a checkbox — which is what most show hardware offers.'
         },
         {

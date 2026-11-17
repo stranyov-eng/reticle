@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { open, closeAll, startRec, stopRec, snap, OUT } from './rec.mjs';
 
-const SECTIONS = ['net'];
+const SECTIONS = ['net', 'app'];
 const args = process.argv.slice(2);
 const check = args.includes('--check');
 const want = args.filter((a) => !a.startsWith('--'));
@@ -17,14 +17,17 @@ const want = args.filter((a) => !a.startsWith('--'));
 const mods = {};
 for (const s of SECTIONS) {
   const m = (await import(`./${s}.mjs`)).default;
-  mods[s] = { file: m.file, clips: m.clips, slow: m.slow || {} };
+  mods[s] = { file: m.file, clips: m.clips, slow: m.slow || {}, crf: m.crf || {} };
 }
 
 const jobs = [];
 for (const w of (want.length ? want : Object.keys(mods))) {
   if (mods[w]) { Object.keys(mods[w].clips).forEach((n) => jobs.push([w, n])); continue; }
-  const s = w.split('-')[0];
-  if (!mods[s] || !mods[s].clips[w]) { console.log('unknown clip ' + w); continue; }
+  // A clip is found by name across every section rather than by a prefix: clip
+  // names say what they show ('dmx-grid'), which is not the same thing as which
+  // file they happen to live in.
+  const s = Object.keys(mods).find((k) => mods[k].clips[w]);
+  if (!s) { console.log('unknown clip ' + w); continue; }
   jobs.push([s, w]);
 }
 
@@ -44,7 +47,7 @@ for (const [s, name] of jobs) {
     } else {
       const rec = await startRec(page, { slowBy: m.slow[name] || 1 });
       await act();
-      results[name] = await stopRec(rec, name);
+      results[name] = await stopRec(rec, name, { crf: m.crf[name] });
       await snap(page, name + '-1');
       fs.writeFileSync(resFile, JSON.stringify(results, null, 1));
     }

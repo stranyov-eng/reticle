@@ -90,12 +90,149 @@
     emit('nettest-done', false);
   }
 
+  /* ---------- live traffic ----------
+   * A source that is listening has to look like one: rows appearing, values
+   * moving, a rate that settles. All of it is generated here, deterministically
+   * enough that two takes of the same clip tell the same story.
+   */
+
+  const SOURCES = [];
+  let tick = 0, ticker = null;
+
+  // One OSC sender's worth of addresses, the shape a tracking system or a
+  // console actually puts on the wire.
+  const ADDRESSES = [
+    { path: '/track/1/pos', slots: ['f', 'f', 'f'] },
+    { path: '/track/2/pos', slots: ['f', 'f', 'f'] },
+    { path: '/track/1/size', slots: ['f'] },
+    { path: '/cue/current', slots: ['i'] },
+    { path: '/cue/name', slots: ['s'] },
+    { path: '/master/level', slots: ['f'] },
+    { path: '/transport/playing', slots: ['b'] },
+  ];
+
+  const CUE_NAMES = ['ACT 1 — OPEN', 'ACT 1 — BUILD', 'ACT 2 — REVEAL'];
+  const wave = (i, k, n) => (Math.sin((tick / 18) + i * 1.3 + k * 0.7) + 1) / 2 * n;
+
+  function valueFor(tag, i, k) {
+    if (tag === 'f') return { t: 'Float', v: +(wave(i, k, 1)).toFixed(3) };
+    if (tag === 'i') return { t: 'Int', v: 1 + (Math.floor(tick / 40) % 3) };
+    if (tag === 's') return { t: 'Str', v: CUE_NAMES[Math.floor(tick / 40) % 3] };
+    return { t: 'Bool', v: true };
+  }
+
+  function statsSnapshot(sourceId) {
+    const nowUs = 2_000_000 + tick * 33_333;
+    const rows = ADDRESSES.map((a, i) => {
+      const slots = a.slots.map((tag, k) => {
+        const last = valueFor(tag, i, k);
+        const num = typeof last.v === 'number' ? last.v : null;
+        return {
+          type_tag: tag, type_changed: false, last,
+          min: num === null ? null : 0, max: num === null ? null : 1,
+          avg: num === null ? null : 0.5,
+        };
+      });
+      return {
+        key: sourceId + '|' + a.path, source_id: sourceId, path: a.path,
+        count: 40 + tick, last_us: nowUs, first_us: 2_000_000,
+        rate: 60, dt_min_us: 15_000, dt_max_us: 19_000, dt_avg_us: 16_667,
+        slots,
+      };
+    });
+    return { rows, now_us: nowUs, total_addrs: rows.length };
+  }
+
+  function logBatch(sourceId) {
+    const a = ADDRESSES[tick % ADDRESSES.length];
+    return {
+      messages: [{
+        source_id: sourceId, path: a.path,
+        args: a.slots.map((tag, k) => valueFor(tag, tick % ADDRESSES.length, k)),
+        t_us: 2_000_000 + tick * 33_333, from: '192.168.2.40:51002',
+      }],
+      dropped: 0,
+    };
+  }
+
+  /** A chase across the universe, so the grid reads as light rather than data.
+   *  Unhurried because a real one is; it does not help the file size, which is
+   *  set by the 512 cells of standing digits rather than by what moves. */
+  const dmxValues = (universe) => Array.from({ length: 512 }, (_, ch) => {
+    const head = Math.round(tick * 1.1 + universe * 40) % 512;
+    const d = Math.min(Math.abs(ch - head), 512 - Math.abs(ch - head));
+    return d < 40 ? Math.round(255 * (1 - d / 40)) : (ch % 16 === 0 ? 40 : 0);
+  });
+
+  const universeRows = (sourceId) => [1, 2, 3, 4].map((u) => ({
+    source_id: sourceId, universe: u, width: 512,
+    count: 200 + tick, lost: u === 3 ? 2 : 0, preview: 0, fps: u === 2 ? 25.0 : 44.0,
+    last_us: 2_000_000 + tick * 33_333,
+    senders: u === 4
+      ? [{ cid: 'a1', name: 'Console A', priority: 100, count: 120 + tick, last_us: 2_000_000 },
+         { cid: 'b2', name: 'Console B', priority: 100, count: 80 + tick, last_us: 2_000_000 }]
+      : [{ cid: 'a1', name: 'Console A', priority: 100, count: 200 + tick, last_us: 2_000_000 }],
+    conflict: u === 4,
+  }));
+
+  function startTraffic() {
+    if (ticker) return;
+    ticker = setInterval(() => {
+      tick++;
+      const osc = SOURCES.find((s) => s.cfg.kind === 'osc-udp');
+      const sacn = SOURCES.find((s) => s.cfg.kind === 'sacn');
+      if (osc) { emit('stats', statsSnapshot(osc.id)); emit('log', logBatch(osc.id)); }
+      if (sacn) emit('dmx', universeRows(sacn.id));
+      emit('sources', SOURCES.map((s) => ({ ...s, packets: 200 + tick * 7, messages: 400 + tick * 9 })));
+    }, 33);
+  }
+
   const COMMANDS = {
     app_version: () => '0.11.0',
     list_interfaces: () => ADAPTERS,
-    list_sources: () => [],
-    sparks: () => ({}),
-    dmx_frame: () => null,
+    list_sources: () => SOURCES,
+    sparks: ({ requests }) => (requests || []).map((r, i) =>
+      Array.from({ length: 60 }, (_, n) => (Math.sin(n / 7 + i) + 1) / 2)),
+    add_source: ({ cfg }) => {
+      const info = {
+        id: SOURCES.length + 1, cfg, local_port: cfg.port, status: 'listening',
+        error: null, packets: 0, messages: 0, invalid: 0, dropped: 0,
+      };
+      SOURCES.push(info);
+      startTraffic();
+      return info;
+    },
+    remove_source: ({ id }) => {
+      const i = SOURCES.findIndex((s) => s.id === id);
+      if (i >= 0) SOURCES.splice(i, 1);
+      emit('sources', SOURCES);
+      return null;
+    },
+    dmx_frame: ({ universe }) => {
+      const sacn = SOURCES.find((s) => s.cfg.kind === 'sacn');
+      if (!sacn) return null;
+      const values = dmxValues(universe);
+      return {
+        source_id: sacn.id, universe, width: 512, values,
+        min: values.map((v) => Math.max(0, v - 30)),
+        max: values.map((v) => Math.min(255, v + 30)),
+        count: 200 + tick, lost: 0, preview: 0, fps: 44.0,
+        last_us: 2_000_000 + tick * 33_333,
+      };
+    },
+    http_request: ({ req }) => {
+      const body = JSON.stringify({
+        status: 'ok',
+        transport: { playing: true, position: '00:01:12:04' },
+        track: { name: 'ACT 1 — OPEN', loop: false },
+      });
+      return {
+        status: 200, status_text: 'OK',
+        headers: [['content-type', 'application/json'], ['server', 'd3/26.1']],
+        body, json_pretty: JSON.stringify(JSON.parse(body), null, 2),
+        content_type: 'application/json', size: body.length, truncated: false, ms: 14,
+      };
+    },
     pick_folder: () => null,
     save_text: () => null,
     save_binary: () => null,

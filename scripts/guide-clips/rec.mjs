@@ -291,7 +291,7 @@ export async function startRec(page, { slowBy = 1 } = {}) {
   slow = slowBy; pace = PACE * slow; moving = [];
   return { cdp, frames, t0: Date.now() / 1000 };
 }
-export async function stopRec(rec, name, { tail = 1.2 } = {}) {
+export async function stopRec(rec, name, { tail = 1.2, crf = 26 } = {}) {
   await sleep(tail * 1000); pace = 1;
   const tEnd = Date.now() / 1000;
   await rec.cdp.send('Page.stopScreencast');
@@ -312,7 +312,7 @@ export async function stopRec(rec, name, { tail = 1.2 } = {}) {
   const raw = path.join(OUT, name + '.raw.mp4'), mp4 = path.join(OUT, name + '.mp4'), webp = path.join(OUT, name + '.webp');
   ff(['-f', 'concat', '-safe', '0', '-i', path.join(dir, 'list.txt'), '-vf', 'fps=30,scale=' + OW + ':' + OH, '-c:v', 'libx264', '-crf', '14', '-preset', 'medium', '-pix_fmt', 'yuv420p', raw]);
   // the site's clip files (tools/help/optimize-clip.sh): 1920×1200 H.264, silent, faststart, CRF 26 · poster 0.5 s before the end
-  ff(['-i', raw, '-vf', 'fps=30', '-an', '-c:v', 'libx264', '-crf', '26', '-preset', 'slow', '-movflags', '+faststart', '-pix_fmt', 'yuv420p', mp4]);
+  ff(['-i', raw, '-vf', 'fps=30', '-an', '-c:v', 'libx264', '-crf', String(crf), '-preset', 'slow', '-movflags', '+faststart', '-pix_fmt', 'yuv420p', mp4]);
   ff(['-sseof', '-0.5', '-i', mp4, '-frames:v', '1', '-c:v', 'libwebp', '-q:v', '80', webp]);
   // a contact sheet to look at: 9 frames across the clip
   const dur = tEnd - fr[0].t;
