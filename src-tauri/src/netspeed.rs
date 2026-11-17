@@ -36,6 +36,102 @@ const TMP_PREFIX: &str = "reticle-speedtest";
 /// SMB port, used for the latency probe.
 const SMB_PORT: u16 = 445;
 
+/// Sector alignment that unbuffered I/O requires: offsets, lengths and the
+/// buffer address all have to be multiples of this.
+const ALIGN: usize = 4096;
+
+/// Bypass the cache. Without it a second pass over the same file is served
+/// from the client's RAM and reports memory bandwidth — 6 GB/s over a 10 GbE
+/// link, which is nonsense, but nonsense that looks like a result.
+#[cfg(windows)]
+const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
+#[cfg(windows)]
+const FILE_FLAG_WRITE_THROUGH: u32 = 0x8000_0000;
+
+/// A buffer whose start address is sector-aligned, as unbuffered I/O demands.
+///
+/// Over-allocates and takes an aligned window inside: all of it stays within
+/// one `Vec`, so there is no raw allocation to get wrong.
+struct AlignedBuf {
+    raw: Vec<u8>,
+    start: usize,
+    len: usize,
+}
+
+impl AlignedBuf {
+    fn new(len: usize) -> Self {
+        let raw = vec![0u8; len + ALIGN];
+        let start = (ALIGN - (raw.as_ptr() as usize % ALIGN)) % ALIGN;
+        Self { raw, start, len }
+    }
+
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.raw[self.start..self.start + self.len]
+    }
+
+    fn fill_incompressible(&mut self) {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        for chunk in self.as_mut().chunks_mut(8) {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            for (b, s) in chunk.iter_mut().zip(seed.to_le_bytes()) {
+                *b = s;
+            }
+        }
+    }
+}
+
+/// Open for reading past the cache, falling back to a normal open where the
+/// filesystem refuses. The fallback is reported, because a cached number is
+/// worth knowing about rather than silently trusting.
+fn open_read(path: &Path) -> std::io::Result<(fs::File, bool)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_NO_BUFFERING)
+            .open(path)
+        {
+            Ok(f) => return Ok((f, true)),
+            Err(_) => return fs::File::open(path).map(|f| (f, false)),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path).map(|f| (f, false))
+    }
+}
+
+/// Create for writing past the cache, so the clock measures the server rather
+/// than the client's write-behind buffer.
+fn create_write(path: &Path) -> std::io::Result<(fs::File, bool)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        match fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH)
+            .open(path)
+        {
+            Ok(f) => return Ok((f, true)),
+            Err(_) => return fs::File::create(path).map(|f| (f, false)),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::create(path).map(|f| (f, false))
+    }
+}
+
+/// Round down to a sector boundary.
+fn align_down(value: u64) -> u64 {
+    value - (value % ALIGN as u64)
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Target {
     pub id: u32,
@@ -83,6 +179,8 @@ pub struct TargetResult {
     /// Local address the traffic actually left from, and its adapter.
     pub via_ip: Option<String>,
     pub via_adapter: Option<String>,
+    /// Machine name behind the address, when the network can tell us.
+    pub host_name: Option<String>,
     pub error: Option<String>,
     /// Why a number is lower than asked for, when it is.
     pub note: Option<String>,
@@ -100,6 +198,7 @@ impl TargetResult {
             read_bytes: 0,
             write_bytes: 0,
             via_ip: None,
+            host_name: None,
             via_adapter: None,
             error: None,
             note: None,
@@ -127,6 +226,43 @@ fn latency(host: &str) -> Option<f64> {
     let started = Instant::now();
     TcpStream::connect_timeout(&addr, Duration::from_secs(3)).ok()?;
     Some(started.elapsed().as_secs_f64() * 1000.0)
+}
+
+/// Machine name behind an address, via reverse DNS.
+///
+/// On a show network this is how a row stops being `192.168.2.14` and starts
+/// being `03-ACT-2`: the names are already there, nobody wants to retype them,
+/// and a mistyped label is worse than none.
+///
+/// Returns `None` when there is no record, which is normal on networks without
+/// a DNS server — the address still works, it just stays unlabelled.
+pub fn host_name(host: &str) -> Option<String> {
+    let ip: std::net::IpAddr = host.parse().ok()?;
+    let name = dns_lookup::lookup_addr(&ip).ok()?;
+
+    // A lookup with no record often echoes the address back; that is not a name.
+    if name == host || name.is_empty() {
+        return None;
+    }
+
+    // Strip the domain: on a show network the short name is the useful part.
+    Some(name.split('.').next().unwrap_or(&name).to_string())
+}
+
+/// Resolve several hosts at once.
+///
+/// In parallel because a lookup without a record waits for the resolver to give
+/// up, and nine of those in a row would stall the interface for seconds.
+pub fn resolve_hosts(hosts: Vec<String>) -> Vec<Option<String>> {
+    let handles: Vec<_> = hosts
+        .into_iter()
+        .map(|h| std::thread::spawn(move || host_name(&h)))
+        .collect();
+
+    handles
+        .into_iter()
+        .map(|h| h.join().unwrap_or(None))
+        .collect()
 }
 
 /// Which local address — and therefore which adapter — traffic to this host
@@ -251,40 +387,54 @@ fn measure_read(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>)
         ));
     }
 
+    // Unbuffered I/O only accepts whole sectors, so the volume per stream is
+    // trimmed to a multiple of the block size.
+    let per_thread = align_down(per_thread - (per_thread % BLOCK as u64)).max(BLOCK as u64);
+
     let started = Instant::now();
     let mut handles = Vec::with_capacity(threads);
 
     for i in 0..threads {
         let path = file.clone();
         let cancel = cancel.clone();
-        let offset = slice * i as u64;
+        let offset = align_down(slice * i as u64);
 
-        handles.push(std::thread::spawn(move || -> Result<u64, String> {
-            let mut f = fs::File::open(&path).map_err(|e| e.to_string())?;
+        handles.push(std::thread::spawn(move || -> Result<(u64, bool), String> {
+            let (mut f, unbuffered) = open_read(&path).map_err(|e| e.to_string())?;
             f.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
 
-            let mut buf = vec![0u8; BLOCK];
+            let mut buf = AlignedBuf::new(BLOCK);
             let mut done: u64 = 0;
 
             while done < per_thread {
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
-                let want = ((per_thread - done) as usize).min(BLOCK);
-                match f.read(&mut buf[..want]) {
+                // Always a whole block: a short read would be rejected
+                // outright when the cache is bypassed.
+                match f.read(buf.as_mut()) {
                     Ok(0) => break,
                     Ok(n) => done += n as u64,
                     Err(e) => return Err(e.to_string()),
                 }
             }
 
-            Ok(done)
+            Ok((done, unbuffered))
         }));
     }
 
     let mut bytes = 0u64;
+    let mut cached = false;
     for h in handles {
-        bytes += h.join().map_err(|_| "read thread panicked".to_string())??;
+        let (n, unbuffered) = h.join().map_err(|_| "read thread panicked".to_string())??;
+        bytes += n;
+        if !unbuffered {
+            cached = true;
+        }
+    }
+
+    if cached {
+        note = Some("cache could not be bypassed — the figure may be inflated".to_string());
     }
 
     Ok(Measured {
@@ -300,21 +450,12 @@ fn measure_read(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>)
 /// number would describe the client's write cache, not the server.
 fn measure_write(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>) -> Result<Measured, String> {
     let threads = threads.max(1);
-    let per_thread = (size / threads as u64).max(BLOCK as u64);
-
-    // Not compressible: some arrays and some SMB setups compress in flight, and
-    // a buffer of zeroes would measure the compressor.
-    let mut block = vec![0u8; BLOCK];
-    let mut seed = 0x2545_F491_4F6C_DD1Du64;
-    for chunk in block.chunks_mut(8) {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        for (b, s) in chunk.iter_mut().zip(seed.to_le_bytes()) {
-            *b = s;
-        }
+    // Whole blocks only, as unbuffered writes demand.
+    let per_thread = {
+        let raw = (size / threads as u64).max(BLOCK as u64);
+        raw - (raw % BLOCK as u64)
     }
-    let block = Arc::new(block);
+    .max(BLOCK as u64);
 
     let started = Instant::now();
     let mut handles = Vec::with_capacity(threads);
@@ -322,25 +463,29 @@ fn measure_write(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>
     for i in 0..threads {
         let path = dir.join(format!("{TMP_PREFIX}-{i}.tmp"));
         let cancel = cancel.clone();
-        let block = block.clone();
 
-        handles.push(std::thread::spawn(move || -> (Result<u64, String>, PathBuf) {
-            let run = || -> Result<u64, String> {
-                let mut f = fs::File::create(&path).map_err(|e| e.to_string())?;
+        handles.push(std::thread::spawn(move || -> (Result<(u64, bool), String>, PathBuf) {
+            let run = || -> Result<(u64, bool), String> {
+                let (mut f, unbuffered) = create_write(&path).map_err(|e| e.to_string())?;
+
+                // Incompressible: some arrays and some SMB setups compress in
+                // flight, and a buffer of zeroes would measure the compressor.
+                // Built per thread so the streams do not share one page.
+                let mut buf = AlignedBuf::new(BLOCK);
+                buf.fill_incompressible();
+
                 let mut done: u64 = 0;
-
                 while done < per_thread {
                     if cancel.load(Ordering::Relaxed) {
                         break;
                     }
-                    let want = ((per_thread - done) as usize).min(BLOCK);
-                    f.write_all(&block[..want]).map_err(|e| e.to_string())?;
-                    done += want as u64;
+                    f.write_all(buf.as_mut()).map_err(|e| e.to_string())?;
+                    done += BLOCK as u64;
                 }
 
                 f.flush().map_err(|e| e.to_string())?;
                 f.sync_all().map_err(|e| e.to_string())?;
-                Ok(done)
+                Ok((done, unbuffered))
             };
 
             let outcome = run();
@@ -350,6 +495,7 @@ fn measure_write(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>
 
     let mut bytes = 0u64;
     let mut failure: Option<String> = None;
+    let mut cached = false;
 
     for h in handles {
         let (outcome, path) = h.join().map_err(|_| "write thread panicked".to_string())?;
@@ -357,7 +503,12 @@ fn measure_write(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>
         // in a show folder are worse than a missing measurement.
         let _ = fs::remove_file(&path);
         match outcome {
-            Ok(n) => bytes += n,
+            Ok((n, unbuffered)) => {
+                bytes += n;
+                if !unbuffered {
+                    cached = true;
+                }
+            }
             Err(e) => {
                 failure.get_or_insert(e);
             }
@@ -371,7 +522,7 @@ fn measure_write(dir: &Path, size: u64, threads: usize, cancel: &Arc<AtomicBool>
     Ok(Measured {
         bytes,
         seconds: started.elapsed().as_secs_f64(),
-        note: None,
+        note: cached.then(|| "cache could not be bypassed — the figure may be inflated".to_string()),
     })
 }
 
@@ -382,6 +533,7 @@ pub fn run_target(target: &Target, opts: &TestOpts, cancel: &Arc<AtomicBool>) ->
     let dir = PathBuf::from(&target.path);
 
     if let Some(host) = host_of(&target.path) {
+        out.host_name = host_name(&host);
         out.latency_ms = latency(&host);
         if let Some((ip, adapter)) = route_via(&host) {
             out.via_ip = Some(ip);
@@ -453,6 +605,27 @@ mod tests {
             .map(|i| i.ip().to_string())
             .collect();
         assert!(locals.contains(&ip), "source address should belong to this machine");
+    }
+
+    /// Unbuffered I/O rejects anything misaligned, so this is load-bearing:
+    /// without it reads fall back to the cache and report memory bandwidth.
+    #[test]
+    fn buffer_is_sector_aligned() {
+        for len in [BLOCK, 64 * 1024, ALIGN] {
+            let mut buf = AlignedBuf::new(len);
+            let slice = buf.as_mut();
+            assert_eq!(slice.len(), len);
+            assert_eq!(slice.as_ptr() as usize % ALIGN, 0, "buffer must start on a sector boundary");
+        }
+    }
+
+    #[test]
+    fn offsets_round_down_to_sectors() {
+        assert_eq!(align_down(0), 0);
+        assert_eq!(align_down(ALIGN as u64), ALIGN as u64);
+        assert_eq!(align_down(ALIGN as u64 + 1), ALIGN as u64);
+        assert_eq!(align_down(ALIGN as u64 - 1), 0);
+        assert_eq!(align_down(10 * ALIGN as u64 + 7), 10 * ALIGN as u64);
     }
 
     #[test]

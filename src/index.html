@@ -173,6 +173,13 @@
 
   <main class="view" id="view-net">
     <div class="net-bar">
+      <label class="net-opt"><span data-i18n="netPreset">Preset</span>
+        <select id="netPreset"><option value="" data-i18n="netPresetNone">— none —</option></select>
+      </label>
+      <input type="text" id="netPresetName" class="net-preset-name" data-i18n-placeholder="netPresetNameHint" placeholder="preset name" spellcheck="false" />
+      <button class="btn" type="button" id="netPresetSave" data-i18n="netPresetSave">Save</button>
+      <button class="btn" type="button" id="netPresetDelete" data-i18n="netPresetDelete">Delete</button>
+
       <label class="net-opt"><span data-i18n="netSize">Size</span>
         <select id="netSize">
           <option value="128">128 MB</option>
@@ -244,9 +251,8 @@
         <tr>
           <th class="net-col-path" data-i18n="netTarget">target</th>
           <th class="num" data-i18n="netLatency">latency</th>
-          <th class="num" data-i18n="netRead">read</th>
-          <th class="num" data-i18n="netWrite">write</th>
-          <th class="num" id="netLinkHead">% of 10 GbE</th>
+          <th class="num" id="netReadHead">read</th>
+          <th class="num" id="netWriteHead">write</th>
           <th class="net-col-via" data-i18n="netVia">via</th>
           <th data-i18n="netStatus">status</th>
           <th class="net-col-act"></th>

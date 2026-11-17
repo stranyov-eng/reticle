@@ -528,7 +528,9 @@ tr.is-silent td.silence { color: var(--danger); }
 .net-table td.status.bad { color: var(--danger); }
 
 /* the value that answers the question, so it carries the weight */
-.net-table td.read, .net-table td.write { font-weight: var(--fw-bold); }
+.net-table td.read .v, .net-table td.write .v { font-weight: var(--fw-bold); }
+/* its share of the link, kept beside the number it describes */
+.net-table td.read .pct, .net-table td.write .pct { display: block; font-size: 0.82em; color: var(--dim); font-weight: var(--fw-regular); }
 .net-table td.slow { color: var(--danger); }
 
 .net-acts { display: flex; gap: 6px; }
@@ -753,7 +755,14 @@ tr.is-silent td.silence { color: var(--danger); }
 .statusbar .hint { font-family: var(--font); color: var(--dimmer); }
 
 .net-col-via { width: 120px; }
+.net-table td.read, .net-table td.write { line-height: 1.3; }
 .net-table td.via { color: var(--dim); font-family: var(--mono); }
 .net-table td.via.slow { color: var(--danger); }
 
 .net-note.bad { color: var(--danger); }
+
+.net-preset-name { width: 150px; }
+
+/* machine name under the path: context, not a field */
+.net-host { display: block; font-family: var(--font); font-size: var(--fs-sublabel); color: var(--frame-active); padding: 2px 2px 0; letter-spacing: 0.02em; }
+.net-host:empty { display: none; }

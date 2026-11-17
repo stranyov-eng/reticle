@@ -905,6 +905,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dns-lookup"
+version = "4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "263c0ccfc6b3b6a93e959edad4f985779e76c0b36dbb2e13e3d27c690974adf1"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "socket2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "dom_query"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3137,9 +3149,10 @@ dependencies = [
 
 [[package]]
 name = "reticle"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
+ "dns-lookup",
  "if-addrs",
  "reqwest",
  "rosc",

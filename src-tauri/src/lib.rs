@@ -350,6 +350,17 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
     Ok(Some(path.into_path().map_err(|e| e.to_string())?.display().to_string()))
 }
 
+/// Machine names behind a set of addresses, for labelling targets.
+///
+/// Separate from the test so the table can fill in names as soon as targets
+/// are added, without waiting for a measurement.
+#[tauri::command]
+async fn resolve_hosts(hosts: Vec<String>) -> Result<Vec<Option<String>>, String> {
+    tauri::async_runtime::spawn_blocking(move || netspeed::resolve_hosts(hosts))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Run a throughput test across the given shares.
 ///
 /// Targets are measured one after another on purpose: nine servers tested
@@ -525,6 +536,7 @@ pub fn run() {
             save_binary,
             http_request,
             pick_folder,
+            resolve_hosts,
             net_test,
             net_test_cancel
         ])

@@ -116,10 +116,22 @@ link speed, and **which local adapter the traffic actually left from**.
 
 Deliberate choices:
 
+- **Reads and writes bypass the cache.** Without that, a second pass over the
+  same file is served from the client's RAM and reports memory bandwidth —
+  6 GB/s over a 10 GbE link, which is nonsense that nevertheless looks like a
+  result. The cost is sector alignment: offsets, lengths and the buffer address
+  must all be multiples of 4096, and there are tests guarding that. Where a
+  filesystem refuses unbuffered access, the run still happens and says so.
 - **Several streams by default.** A single SMB stream tops out near 400–600 MB/s
   on a 10 GbE link — it runs out of one CPU core and round-trip latency long
   before it runs out of wire. Measuring single-threaded reports that ceiling as
   if it were the network. Comparing 1 stream against 8 tells the two apart.
+- **Machines are named, not just addressed.** Reverse DNS turns `192.168.2.14`
+  into `03-ACT-2`, looked up in parallel as targets are added. No resolver on
+  the network simply means no label, which is not an error.
+- **Presets per venue.** A preset stores the targets *and* the settings they
+  were measured with, because comparing today's figure with last month's only
+  means something if the test was the same. The app opens on the last one used.
 - **One target at a time.** Nine servers measured simultaneously would share one
   uplink and every number would be wrong.
 - **SMB, not raw bandwidth.** Copy tools move data over SMB, and the protocol's

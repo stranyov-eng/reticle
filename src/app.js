@@ -78,12 +78,23 @@ const I18N = {
     netLatency: 'latency',
     netRead: 'read',
     netWrite: 'write',
+    netPreset: 'Preset',
+    netPresetNone: '— none —',
+    netPresetNameHint: 'preset name',
+    netPresetSave: 'Save',
+    netPresetDelete: 'Delete',
+    netPresetSaved: (name, n) => `saved "${name}" with ${n} targets`,
+    netPresetLoaded: (name, n) => `loaded "${name}": ${n} targets`,
+    netPresetDeleted: (name) => `deleted "${name}"`,
+    netPresetNeedName: 'name the preset first',
+    netPresetNeedTargets: 'add targets before saving a preset',
     netExport: 'Export report',
     netReportTitle: 'RETICLE — NETWORK REPORT',
     netReportNothing: 'run a test first',
     netReportSummary: (n, lo, hi, spread) => `${n} targets · ${lo}–${hi} MB/s · spread x${spread}`,
     netLink: 'Link',
-    netOfLink: (label) => `% of ${label}`,
+    netReadOf: (label) => `read · % of ${label}`,
+    netWriteOf: (label) => `write · % of ${label}`,
     netStatus: 'status',
     netEmptyTitle: 'No targets yet.',
     netWriteWarning: 'Write mode creates temporary files in each folder and deletes them afterwards.',
@@ -1051,6 +1062,192 @@ function removeNetTarget(id) {
   renderNetTable();
 }
 
+/* ---------- machine names ----------
+ * Reverse DNS turns 192.168.2.14 into 03-ACT-2. Looked up once per address and
+ * remembered, because the answer does not change while the app is open and a
+ * lookup without a record waits for the resolver to give up.
+ */
+
+const hostNames = new Map();   // ip -> name | null (null = asked, nothing there)
+
+function hostOfUnc(path) {
+  const m = /^\\\\([^\\/]+)/.exec(path.trim());
+  return m ? m[1] : null;
+}
+
+function paintHostNames() {
+  for (const target of netTargets) {
+    const entry = netRows.get(target.id);
+    if (!entry) continue;
+    const host = hostOfUnc(target.path);
+    const name = host ? hostNames.get(host) : null;
+    entry.cells.host.textContent = name || '';
+  }
+}
+
+async function resolveHostNames() {
+  const unknown = [...new Set(
+    netTargets.map((x) => hostOfUnc(x.path)).filter((h) => h && !hostNames.has(h)),
+  )];
+  if (!unknown.length) return;
+
+  // Mark as asked up front, so a second render does not queue the same lookups.
+  for (const h of unknown) hostNames.set(h, null);
+
+  try {
+    const names = await invoke('resolve_hosts', { hosts: unknown });
+    unknown.forEach((h, i) => hostNames.set(h, names[i] || null));
+    paintHostNames();
+  } catch {
+    // No resolver on this network is a normal state, not an error worth showing.
+  }
+}
+
+/* ---------- site presets ----------
+ * A preset is the whole setup for one venue: the targets plus the settings
+ * they were measured with. Loading it back has to reproduce the same test,
+ * otherwise comparing today's numbers with last month's means nothing.
+ */
+
+const NET_PRESETS_KEY = 'reticle-net-presets';
+/** Which preset is in play, so the app opens where it was left. */
+const NET_ACTIVE_KEY = 'reticle-net-active-preset';
+/** Test settings, kept apart from presets: changing a dropdown should survive
+ *  a restart even when no preset is loaded. */
+const NET_OPTS_KEY = 'reticle-net-opts';
+
+function saveNetOpts() {
+  localStorage.setItem(NET_OPTS_KEY, JSON.stringify({
+    size: $('netSize').value,
+    threads: $('netThreads').value,
+    mode: $('netMode').value,
+    via: $('netVia').value,
+  }));
+}
+
+function restoreNetOpts() {
+  let saved;
+  try {
+    saved = JSON.parse(localStorage.getItem(NET_OPTS_KEY) || '{}');
+  } catch {
+    return;
+  }
+
+  const set = (id, value) => { if (value !== undefined && value !== null && value !== '') $(id).value = value; };
+  set('netSize', saved.size);
+  set('netThreads', saved.threads);
+  set('netMode', saved.mode);
+  // The adapter is restored after the interface list arrives, since the
+  // option it refers to does not exist yet at this point.
+  if (saved.via) restoreNetOpts.pendingVia = saved.via;
+
+  $('netWarn').hidden = $('netMode').value === 'read';
+}
+
+function loadNetPresets() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(NET_PRESETS_KEY) || '[]');
+    return Array.isArray(raw) ? raw.filter((p) => p && typeof p.name === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveNetPresets(list) {
+  localStorage.setItem(NET_PRESETS_KEY, JSON.stringify(list));
+}
+
+function renderNetPresetPicker(selected = '') {
+  const sel = $('netPreset');
+  sel.textContent = '';
+
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = t('netPresetNone');
+  sel.appendChild(none);
+
+  for (const preset of loadNetPresets()) {
+    const opt = document.createElement('option');
+    opt.value = preset.name;
+    opt.textContent = `${preset.name} · ${preset.targets.length}`;
+    sel.appendChild(opt);
+  }
+
+  sel.value = selected;
+}
+
+function saveNetPreset() {
+  const note = $('netNote');
+  const name = $('netPresetName').value.trim() || $('netPreset').value;
+
+  if (!name) { note.textContent = t('netPresetNeedName'); return; }
+
+  const paths = netTargets.map((x) => x.path).filter(Boolean);
+  if (!paths.length) { note.textContent = t('netPresetNeedTargets'); return; }
+
+  const preset = {
+    name,
+    targets: paths,
+    size_mb: Number($('netSize').value),
+    threads: Number($('netThreads').value),
+    mode: $('netMode').value,
+    link: $('netLink').value,
+    via: $('netVia').value,
+  };
+
+  // Same name overwrites, so refining a venue setup does not breed copies.
+  const list = loadNetPresets().filter((p) => p.name !== name);
+  list.push(preset);
+  saveNetPresets(list);
+
+  renderNetPresetPicker(name);
+  localStorage.setItem(NET_ACTIVE_KEY, name);
+  saveNetOpts();
+  $('netPresetName').value = '';
+  note.textContent = t('netPresetSaved', name, paths.length);
+}
+
+function applyNetPreset(name) {
+  const preset = loadNetPresets().find((p) => p.name === name);
+  if (!preset) return;
+
+  // The target list is replaced wholesale: a preset describes one venue, and
+  // merging two venues would produce a list that matches neither.
+  for (const { tr } of netRows.values()) tr.remove();
+  netRows.clear();
+  netResults.clear();
+
+  netTargets = preset.targets.map((path) => ({ id: netNextId++, path }));
+  saveNetTargets();
+
+  const set = (id, value) => { if (value !== undefined && value !== null) $(id).value = value; };
+  set('netSize', preset.size_mb);
+  set('netThreads', preset.threads);
+  set('netMode', preset.mode);
+  set('netLink', preset.link);
+  set('netVia', preset.via);
+
+  $('netWarn').hidden = $('netMode').value === 'read';
+  applyLinkChoice();
+  renderNetTable();
+
+  localStorage.setItem(NET_ACTIVE_KEY, preset.name);
+  saveNetOpts();
+
+  $('netPresetName').value = preset.name;
+  $('netNote').textContent = t('netPresetLoaded', preset.name, preset.targets.length);
+}
+
+function deleteNetPreset() {
+  const name = $('netPreset').value;
+  if (!name) return;
+
+  saveNetPresets(loadNetPresets().filter((p) => p.name !== name));
+  if (localStorage.getItem(NET_ACTIVE_KEY) === name) localStorage.removeItem(NET_ACTIVE_KEY);
+  renderNetPresetPicker('');
+  $('netNote').textContent = t('netPresetDeleted', name);
+}
+
 /* ---------- adding a range of hosts ----------
  * Nine servers differing by one octet is the normal case on a show network,
  * and typing nine almost identical UNC paths by hand invites a typo that then
@@ -1117,13 +1314,18 @@ function fmtOfLink(mbps) {
 function applyLinkChoice() {
   const sel = $('netLink');
   const label = sel.options[sel.selectedIndex].textContent;
-  $('netLinkHead').textContent = t('netOfLink', label);
+
+  // The link is named in the column headers rather than in a column of its
+  // own, so both percentages stay next to the numbers they describe.
+  $('netReadHead').textContent = t('netReadOf', label);
+  $('netWriteHead').textContent = t('netWriteOf', label);
   localStorage.setItem(NET_LINK_KEY, sel.value);
 
   for (const [id, result] of netResults) {
     const entry = netRows.get(id);
     if (!entry) continue;
-    entry.cells.link.textContent = fmtOfLink(result.read_mbps || result.write_mbps);
+    entry.cells.readPct.textContent = result.read_mbps ? fmtOfLink(result.read_mbps) : '';
+    entry.cells.writePct.textContent = result.write_mbps ? fmtOfLink(result.write_mbps) : '';
   }
 }
 
@@ -1148,11 +1350,32 @@ function netRowFor(target) {
   pathTd.appendChild(input);
   cells.input = input;
 
-  for (const name of ['latency', 'read', 'write', 'link', 'via']) {
+  // The machine name sits under the path: on a show network it is how people
+  // actually refer to a box, and nobody wants to retype it.
+  const host = document.createElement('span');
+  host.className = 'net-host';
+  pathTd.appendChild(host);
+  cells.host = host;
+
+  for (const name of ['latency', 'read', 'write', 'via']) {
     const td = document.createElement('td');
     td.className = `num ${name}`;
     td.textContent = '—';
     cells[name] = td;
+  }
+
+  // Read and write each carry their own share of the link: with both measured,
+  // a single combined percentage described only one of them.
+  for (const name of ['read', 'write']) {
+    cells[name].textContent = '';
+    const value = document.createElement('span');
+    value.className = 'v';
+    value.textContent = '—';
+    const pct = document.createElement('span');
+    pct.className = 'pct';
+    cells[name].append(value, pct);
+    cells[`${name}Value`] = value;
+    cells[`${name}Pct`] = pct;
   }
 
   const status = document.createElement('td');
@@ -1189,7 +1412,7 @@ function netRowFor(target) {
 
   cells.via.className = 'via';   // left-aligned: it is a name, not a number
 
-  tr.append(pathTd, cells.latency, cells.read, cells.write, cells.link, cells.via, status, acts);
+  tr.append(pathTd, cells.latency, cells.read, cells.write, cells.via, status, acts);
   entry = { tr, cells };
   netRows.set(target.id, entry);
   return entry;
@@ -1215,6 +1438,9 @@ function renderNetTable() {
   }
 
   $('netEmpty').hidden = netTargets.length > 0;
+
+  paintHostNames();
+  resolveHostNames();
 }
 
 function applyNetResult(result) {
@@ -1227,9 +1453,11 @@ function applyNetResult(result) {
 
   c.latency.textContent = result.latency_ms === null || result.latency_ms === undefined
     ? '—' : t('ms', result.latency_ms);
-  c.read.textContent = result.read_mbps ? t('mbps', result.read_mbps) : '—';
-  c.write.textContent = result.write_mbps ? t('mbps', result.write_mbps) : '—';
-  c.link.textContent = fmtOfLink(result.read_mbps || result.write_mbps);
+
+  c.readValue.textContent = result.read_mbps ? t('mbps', result.read_mbps) : '—';
+  c.readPct.textContent = result.read_mbps ? fmtOfLink(result.read_mbps) : '';
+  c.writeValue.textContent = result.write_mbps ? t('mbps', result.write_mbps) : '—';
+  c.writePct.textContent = result.write_mbps ? fmtOfLink(result.write_mbps) : '';
 
   // Which adapter the traffic really left from. On a machine with a 10 GbE
   // card beside a gigabit dongle this is the difference between a real
@@ -1280,6 +1508,9 @@ function drawReport() {
     line: style.getPropertyValue('--line2').trim(),
     accent: style.getPropertyValue('--accent').trim(),
     bad: style.getPropertyValue('--danger').trim(),
+    // Machine names get their own colour: --accent equals --ink in the night
+    // theme, so the name would be indistinguishable from the path.
+    name: style.getPropertyValue('--frame-active').trim(),
   };
 
   const scale = 2;                    // drawn at 2x so the text stays crisp
@@ -1287,7 +1518,7 @@ function drawReport() {
   const rowH = 30;
   const headH = 108;
   const footH = 52;
-  const cols = { target: pad, latency: 760, read: 880, write: 1010, pct: 1130, via: 1215 };
+  const cols = { target: pad, latency: 740, read: 860, write: 1030, via: 1240 };
   const width = 1520;
   const height = headH + rowsData.length * rowH + footH;
 
@@ -1334,9 +1565,8 @@ function drawReport() {
   ctx.fillStyle = colour.dim;
   ctx.fillText('TARGET', cols.target, 97);
   ctx.fillText('LATENCY', cols.latency, 97);
-  ctx.fillText('READ', cols.read, 97);
-  ctx.fillText('WRITE', cols.write, 97);
-  ctx.fillText('% OF LINK', cols.pct, 97);
+  ctx.fillText('READ · % OF LINK', cols.read, 97);
+  ctx.fillText('WRITE · % OF LINK', cols.write, 97);
   ctx.fillText('VIA', cols.via, 97);
 
   const best = Math.max(...rowsData.map((r) => r.result.read_mbps || 0));
@@ -1350,22 +1580,45 @@ function drawReport() {
     ctx.lineTo(width - pad, y + 9.5);
     ctx.stroke();
 
+    // The name goes first when known — that is how the box is referred to —
+    // and in its own colour, so it reads as a label rather than part of the path.
     ctx.font = mono(13);
+    const host = hostOfUnc(target.path);
+    const name = result.host_name || (host ? hostNames.get(host) : null);
+
+    let x = cols.target;
+    if (name) {
+      ctx.fillStyle = colour.name;
+      ctx.fillText(name, x, y);
+      x += ctx.measureText(name).width + 16;
+    }
+
     ctx.fillStyle = colour.ink;
-    ctx.fillText(trimLeft(ctx, target.path, cols.latency - pad - 24), cols.target, y);
+    ctx.fillText(trimLeft(ctx, target.path, cols.latency - x - 24), x, y);
 
     ctx.fillStyle = colour.dim;
     ctx.fillText(result.latency_ms ? t('ms', result.latency_ms) : '—', cols.latency, y);
 
+    // Each figure carries its own share of the link, right beside it.
     const slow = best > 0 && result.read_mbps && result.read_mbps < best * SLOW_RATIO;
-    ctx.fillStyle = slow ? colour.bad : colour.ink;
-    ctx.font = mono(13, 700);
-    ctx.fillText(result.read_mbps ? Math.round(result.read_mbps) : '—', cols.read, y);
-    ctx.fillText(result.write_mbps ? Math.round(result.write_mbps) : '—', cols.write, y);
+    // Units spelled out: a bare number in a report is ambiguous a week later.
+    const pair = (value, cx, bad) => {
+      ctx.font = mono(13, 700);
+      ctx.fillStyle = bad ? colour.bad : colour.ink;
+      const text = value ? `${Math.round(value)} MB/s` : '—';
+      ctx.fillText(text, cx, y);
+
+      if (!value) return;
+      ctx.font = mono(11);
+      ctx.fillStyle = colour.dim;
+      ctx.fillText(fmtOfLink(value), cx + ctx.measureText(text).width + 12, y);
+    };
+
+    pair(result.read_mbps, cols.read, slow);
+    pair(result.write_mbps, cols.write, false);
 
     ctx.font = mono(13);
     ctx.fillStyle = colour.dim;
-    ctx.fillText(fmtOfLink(result.read_mbps || result.write_mbps), cols.pct, y);
     ctx.fillText(result.via_adapter || result.via_ip || '—', cols.via, y);
 
     if (result.error) {
@@ -1467,6 +1720,10 @@ $('netAdd').onclick = () => addNetTarget();
 $('netAddFirst').onclick = () => addNetTarget();
 $('netAddRange').onclick = addNetRange;
 $('netExport').onclick = exportNetReport;
+$('netPresetSave').onclick = saveNetPreset;
+$('netPresetDelete').onclick = deleteNetPreset;
+$('netPreset').onchange = () => applyNetPreset($('netPreset').value);
+$('netPresetName').onkeydown = (e) => { if (e.key === 'Enter') saveNetPreset(); };
 
 // Enter in any of the range fields adds the range — it is a form in spirit.
 for (const id of ['netFrom', 'netTo', 'netSharePath']) {
@@ -1484,6 +1741,17 @@ $('netMode').onchange = () => {
 };
 
 $('netLink').onchange = applyLinkChoice;
+
+// Every setting is remembered as it changes, so the next launch starts where
+// the last one stopped rather than at defaults.
+for (const id of ['netSize', 'netThreads', 'netMode', 'netVia']) {
+  const el = $(id);
+  const previous = el.onchange;
+  el.onchange = (e) => {
+    if (previous) previous(e);
+    saveNetOpts();
+  };
+}
 
 /* ---------- interface size ---------- */
 
@@ -1638,7 +1906,9 @@ function fillViaPicker() {
     sel.appendChild(opt);
   }
 
-  sel.value = keep;
+  // A choice made before the list existed is applied once it does.
+  sel.value = restoreNetOpts.pendingVia || keep;
+  restoreNetOpts.pendingVia = null;
 }
 
 async function loadInterfaces() {
@@ -2119,7 +2389,13 @@ attachCombo($('hUrl'), () => loadUrls().map((u) => ({ value: u })));
 netTargets = loadNetTargets();
 netNextId = netTargets.length ? Math.max(...netTargets.map((x) => x.id)) + 1 : 1;
 $('netLink').value = localStorage.getItem(NET_LINK_KEY) || '10';
+restoreNetOpts();
 applyLinkChoice();
+
+// Open on the preset that was last in play. The target list is restored from
+// its own storage, so the preset is only selected in the picker rather than
+// re-applied — re-applying would throw away any targets added since.
+renderNetPresetPicker(localStorage.getItem(NET_ACTIVE_KEY) || '');
 
 applyStaticStrings();
 renderPresets();
