@@ -280,19 +280,29 @@ pub struct ProgressSnap {
 }
 
 impl Progress {
+    /// The order matters. These are four separate stores and the sampler reads
+    /// them without a lock, so it can catch the gap between any two. Clearing
+    /// the total first means every torn reading is of a phase that has moved
+    /// nothing yet — which is harmless — rather than of a fresh target wearing
+    /// the previous one's finished counters, which made the bar lurch forward
+    /// a whole target and then fall back.
     fn begin(&self, phase: u8, total: u64) {
+        self.total.store(0, Ordering::Relaxed);
         self.done.store(0, Ordering::Relaxed);
-        self.total.store(total, Ordering::Relaxed);
         self.phase.store(phase, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
     }
 
     fn add(&self, bytes: u64) {
         self.done.fetch_add(bytes, Ordering::Relaxed);
     }
 
+    /// Counters are cleared before the target moves, for the same reason: a
+    /// reading taken mid-change should show the old target at a standstill,
+    /// never the new one already finished.
     pub fn enter(&self, id: u32) {
-        self.target.store(id, Ordering::Relaxed);
         self.begin(PHASE_PROBE, 0);
+        self.target.store(id, Ordering::Relaxed);
     }
 
     pub fn finish(&self) {

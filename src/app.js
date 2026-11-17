@@ -2074,6 +2074,8 @@ async function exportNetReport() {
 let netRunState = null;   // { ids, mode, done, pass, passes } for the run in flight
 /** Resolver for the pass currently in flight, set by runOnePass. */
 let netPassDone = null;
+/** Furthest the bar has reached in this run, so it can never go backwards. */
+let netProgMax = 0;
 /** id -> [{ pass, read, write, retrans }], one entry per sweep of the row.
  *  A fault that moves between sweeps is only visible if the sweeps are kept
  *  apart, so nothing here is averaged. */
@@ -2125,16 +2127,25 @@ function paintNetProgress(snap) {
   const span = twoPhase ? 0.5 : 1;
   const base = twoPhase && snap.phase === secondPhase ? 0.5 : 0;
   const within = snap.total > 0 ? Math.min(1, snap.done / snap.total) : 0;
-  const overall = (i + base + within * span) / ids.length;
 
-  $('netProgFill').style.setProperty('--net-prog', overall.toFixed(4));
+  // The whole run, not the current sweep: without the pass in here the bar ran
+  // to the end and snapped back to zero once per sweep.
+  const pass = netRunState.pass || 1;
+  const passes = netRunState.passes || 1;
+  const overall = ((pass - 1) + (i + base + within * span) / ids.length) / passes;
+
+  // Never backwards. The counters are sampled, not transactional, so a reading
+  // can catch the moment between one target finishing and the next declaring
+  // its size — and progress through a fixed list of targets cannot regress
+  // anyway, so clamping loses nothing and removes every such twitch.
+  netProgMax = Math.max(netProgMax, overall);
+  $('netProgFill').style.setProperty('--net-prog', netProgMax.toFixed(4));
 
   const mb = (bytes) => Math.round(bytes / (1024 * 1024));
   const detail = snap.total > 0
     ? `${netPhaseLabel(snap.phase)} ${t('netProgOf', mb(snap.done), mb(snap.total))}`
     : netPhaseLabel(snap.phase);
 
-  const { pass, passes } = netRunState;
   const sweep = passes > 1 ? `${t('netProgPass', pass, passes)} · ` : '';
   $('netProgText').textContent =
     `${sweep}${t('netProgStep', i + 1, ids.length)} · ${netLabelFor(snap.id)} · ${detail}`;
@@ -2154,6 +2165,7 @@ function paintNetProgress(snap) {
 
 function endNetProgress() {
   netRunState = null;
+  netProgMax = 0;
   $('netProg').hidden = true;
   $('netProgFill').style.setProperty('--net-prog', '0');
   for (const { tr } of netRows.values()) tr.style.removeProperty('--row-prog');
@@ -2193,6 +2205,7 @@ async function runNetTest() {
 
   $('netFindings').hidden = true;
   netHistory.clear();
+  netProgMax = 0;
   $('netProgFill').style.setProperty('--net-prog', '0');
   $('netProg').hidden = false;
 
