@@ -1503,7 +1503,10 @@ function applyNetResult(result) {
 
   const trouble = result.error || (wrongAdapter ? t('netWrongAdapter', via) : null);
   c.status.classList.toggle('bad', !!trouble);
+  // The cell is one line wide now, so the full wording lives in the tooltip —
+  // an error worth showing is an error worth reading in full.
   c.status.textContent = trouble || result.note || '';
+  c.status.title = c.status.textContent;
 
   renderNetTable();
 }
