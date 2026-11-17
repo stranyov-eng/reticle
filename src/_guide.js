@@ -122,7 +122,7 @@
         {
           title: 'Is every one of these links really what it should be?',
           hero: true,
-          clip: 'help/net-range.mp4', dur: '0:12',
+          clip: 'help/net-range.mp4', dur: '0:11',
           blurb: 'Targets are file shares — added one at a time, or as a range: give the first and last address plus the share path and every host in between appears at once. Each row reports read and write speed, latency, the share of the selected link speed, which file the read came from, TCP retransmissions, and which local adapter the traffic actually left by. Targets are measured one after another, never together: nine servers tested at once would share one uplink and every number would be wrong.'
         },
         {

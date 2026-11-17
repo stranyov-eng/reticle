@@ -170,7 +170,7 @@ Deliberate choices:
   a ticker samples them five times a second, so reporting cannot slow down the
   thing being measured.
 - **Machines are named, not just addressed.** Reverse DNS turns `192.168.2.14`
-  into `03-ACT-2`, looked up in parallel as targets are added. No resolver on
+  into `03-floor`, looked up in parallel as targets are added. No resolver on
   the network simply means no label, which is not an error.
 - **Presets per venue.** A preset stores the targets *and* the settings they
   were measured with, because comparing today's figure with last month's only

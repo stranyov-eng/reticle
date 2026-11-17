@@ -29,3 +29,6 @@ dist-ssr
 *.dmg
 *.AppImage
 *.deb
+
+# working output from a measurement run — real server names, never committed
+*-result.txt

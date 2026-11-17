@@ -36,7 +36,7 @@
     something intermittent — different problems with different culprits.
 
 .EXAMPLE
-    .\smb-check.ps1 -First 192.168.2.11 -Last 192.168.2.19 -Share 'd3 Projects\01_ADNOC_National_Day_v01\objects' -Repeat 3
+    .\smb-check.ps1 -First 192.168.2.11 -Last 192.168.2.19 -Share 'd3 Projects\Demo_Show_v01\objects' -Repeat 3
 #>
 
 param(

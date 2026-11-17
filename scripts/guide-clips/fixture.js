@@ -6,9 +6,10 @@
   needs the same numbers every take — a live network cannot give that twice
   running, and a guide whose figures change between recordings teaches nothing.
 
-  The numbers below are a real run, kept because they are the case the Network
-  tab exists for: four servers reading at a twentieth of the others while every
-  write is normal.
+  Everything here is invented. The shape of the result is the one the Network
+  tab exists for — four servers reading at a twentieth of the others while
+  every write is normal — but the venue, the machines and the project are made
+  up, because a guide ships to anyone and a client's rig is not ours to show.
 */
 (() => {
   'use strict';
@@ -19,16 +20,18 @@
   };
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // Named after surfaces, the way a rig usually is — and after no rig in
+  // particular. [name, latency ms, read MB/s, write MB/s]
   const SERVERS = [
-    ['00-dir', 0.8, 39, 854],
-    ['01-act-1-us-walls', 0.8, 31, 610],
-    ['02-act-2-floor-1', 1.0, 864, 874],
-    ['03-act-3-floor-2', 1.4, 33, 663],
-    ['04-act-4-arch', 2.2, 29, 718],
-    ['05-act-5-gauze', 0.9, 845, 720],
-    ['06-us-1-us-walls', 1.2, 899, 506],
-    ['07-us-2-floor', 2.6, 856, 877],
-    ['08-us-3-arch-gauze', 0.9, 888, 686],
+    ['01-stage-left', 0.8, 39, 854],
+    ['02-stage-right', 0.8, 31, 610],
+    ['03-floor', 1.0, 864, 874],
+    ['04-ceiling', 1.4, 33, 663],
+    ['05-rear-wall', 2.2, 29, 718],
+    ['06-portal-l', 0.9, 845, 720],
+    ['07-portal-r', 1.2, 899, 506],
+    ['08-gauze', 2.6, 856, 877],
+    ['09-director', 0.9, 888, 686],
   ];
 
   const ADAPTERS = [

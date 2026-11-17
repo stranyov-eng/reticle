@@ -30,7 +30,7 @@ async function seedTargets(page, from = 11, to = 15) {
   await page.evaluate(({ from, to }) => {
     document.getElementById('netFrom').value = `192.168.2.${from}`;
     document.getElementById('netTo').value = `192.168.2.${to}`;
-    document.getElementById('netSharePath').value = 'd3 Projects\\01_ADNOC_National_Day_v01\\objects';
+    document.getElementById('netSharePath').value = 'd3 Projects\\Demo_Show_v01\\objects';
     document.getElementById('netAddRange').click();
     document.getElementById('netFrom').value = '';
     document.getElementById('netTo').value = '';
@@ -51,7 +51,7 @@ export default {
         await sleep(200);
         await typeInto(page, '#netTo', '192.168.2.19', 600, { enter: false });
         await sleep(200);
-        await typeInto(page, '#netSharePath', 'd3 Projects\\01_ADNOC_National_Day_v01\\objects', 700, { enter: false });
+        await typeInto(page, '#netSharePath', 'd3 Projects\\Demo_Show_v01\\objects', 700, { enter: false });
         await sleep(400);
         await clickEl(page, '#netAddRange', 700);
         await hold(900);

@@ -1112,7 +1112,7 @@ function removeNetTarget(id) {
 }
 
 /* ---------- machine names ----------
- * Reverse DNS turns 192.168.2.14 into 03-ACT-2. Looked up once per address and
+ * Reverse DNS turns 192.168.2.14 into 03-floor. Looked up once per address and
  * remembered, because the answer does not change while the app is open and a
  * lookup without a record waits for the resolver to give up.
  */

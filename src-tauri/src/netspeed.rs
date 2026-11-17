@@ -404,7 +404,7 @@ fn latency(host: &str) -> Option<f64> {
 /// Machine name behind an address, via reverse DNS.
 ///
 /// On a show network this is how a row stops being `192.168.2.14` and starts
-/// being `03-ACT-2`: the names are already there, nobody wants to retype them,
+/// being `03-floor`: the names are already there, nobody wants to retype them,
 /// and a mistyped label is worse than none.
 ///
 /// Returns `None` when there is no record, which is normal on networks without
