@@ -2,7 +2,7 @@
   The in-app guide: Reticle's features, written once, rendered by the same
   _help.js the stranyov.pro tools use. F1 opens it.
 
-  A feature may carry a clip — `clip: 'help/net-mode.mp4', dur: '0:08'` — filmed
+  A feature may carry a clip — clip: 'help/<name>.mp4' with its dur — filmed
   against the interface itself, so it can be re-shot whenever the interface
   changes. A feature without one is text, and the panel reads the same either
   way: nothing here waits on a recording.
@@ -122,10 +122,12 @@
         {
           title: 'Is every one of these links really what it should be?',
           hero: true,
+          clip: 'help/net-range.mp4', dur: '0:12',
           blurb: 'Targets are file shares — added one at a time, or as a range: give the first and last address plus the share path and every host in between appears at once. Each row reports read and write speed, latency, the share of the selected link speed, which file the read came from, TCP retransmissions, and which local adapter the traffic actually left by. Targets are measured one after another, never together: nine servers tested at once would share one uplink and every number would be wrong.'
         },
         {
           title: 'Write, read back, delete',
+          clip: 'help/net-mode.mp4', dur: '0:10',
           blurb: 'The default mode. It writes its own files, reads those same files straight back, then removes them — so every server is measured against byte-identical data of the same size. Reading whatever media is already there cannot promise that: the test takes the first file large enough that it finds, so two servers can end up compared against different files on different volumes, and a server whose file sits on a slow disk looks exactly like a server with a bad link.'
         },
         {
@@ -134,6 +136,7 @@
         },
         {
           title: 'Not with the round trip',
+          clip: 'help/net-mode.mp4', dur: '0:10',
           blurb: 'With the cache left in place, reading back a file written a second ago can be served from this machine\'s own RAM — a number that never crossed the network, sitting beside numbers that did. The app says so in red when that combination is selected. For the buffered half of a comparison use Read mode against real media instead.'
         },
         {
@@ -142,10 +145,12 @@
         },
         {
           title: 'Several passes',
+          clip: 'help/net-passes.mp4', dur: '0:13',
           blurb: 'Sweep the row more than once and every sweep\'s read speed is kept separately, never averaged. If the same servers are slow on every pass it is configuration; if the slow ones move around it is contention or something intermittent — different problems with different culprits, and one pass cannot tell them apart.'
         },
         {
           title: 'What this looks like',
+          clip: 'help/net-run.mp4', dur: '0:09',
           blurb: 'Under the table, in sentences: which targets are slow, whether the two directions disagree, what the retransmissions imply, and what to try next. The rules are few and each has to be defensible out loud — a tool that guesses confidently is worse than one that stays quiet, because a wrong lead costs an afternoon of pulling good cable. They also refuse to contradict each other: nothing suggests hunting for a shared setting while the wire is visibly dropping packets.'
         },
         {

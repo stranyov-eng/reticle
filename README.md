@@ -283,6 +283,22 @@ the measurement rather than the network. Interleave the two per server rather
 than running one tool after the other: when the fault wanders, figures taken
 minutes apart prove nothing.
 
+## Guide
+
+**F1** opens the in-app guide — the same knowledge-base panel the stranyov.pro
+tools use, the same renderer, with the content written once as a `HELP` object
+in `src/_guide.js`.
+
+Cards can carry a short silent clip, and those are recorded by script rather
+than by hand, so one can be re-shot the moment the interface changes. The
+recorder films the interface as a page: Reticle's front end reaches Rust only
+through `window.__TAURI__`, so a fixture puts a scripted stand-in there and the
+real interface runs against fixed, repeatable data — which a live network could
+never give twice running. See [`scripts/guide-clips`](scripts/guide-clips).
+
+A card without a clip renders as text and reads perfectly well, so nothing in
+the guide waits on a recording.
+
 ## Testing without hardware
 
 Traffic generators are included:
