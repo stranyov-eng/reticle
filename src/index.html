@@ -8,6 +8,7 @@
   <script>document.documentElement.dataset.size = localStorage.getItem('reticle-ui-size') || 'm';</script>
   <link rel="stylesheet" href="_tokens.css" />
   <link rel="stylesheet" href="_components.css" />
+  <link rel="stylesheet" href="_help.css" />
   <link rel="stylesheet" href="app.css" />
   <script src="_theme.js"></script>
 </head>
@@ -37,6 +38,7 @@
 
     <button class="btn" id="pauseBtn" data-i18n="pause" data-i18n-title="pauseHint" title="Freeze the view — capture keeps running">Pause</button>
     <button class="btn" id="resetBtn" data-i18n="reset" data-i18n-title="resetHint" title="Clear all statistics">Reset</button>
+    <button class="btn" id="guideBtn" data-i18n="guide" data-i18n-title="guideHint" title="Open the guide (F1)">? Guide</button>
     <div class="topbar-sep"></div>
     <div class="theme-toggle"><span id="themeLabel">Night</span><div class="theme-switch" id="themeSwitch"></div></div>
   </header>
@@ -323,6 +325,30 @@
   </footer>
 
 
+  <!-- Guide: the knowledge-base panel the tools use, same renderer and markup.
+       Content lives in _guide.js — one place, so it cannot drift from itself. -->
+  <div class="modal-overlay" id="guideOverlay">
+    <div class="modal modal-kb">
+      <div class="modal-header">
+        <div>
+          <div class="kb-eyebrow" data-i18n="guideEyebrow">Guide</div>
+          <div class="modal-title">Reticle</div>
+        </div>
+        <button class="modal-close" id="guideClose" title="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="kb-lead" data-i18n="guideLead"></p>
+        <div class="kb-grid2">
+          <nav class="kb-nav" id="kbNav"></nav>
+          <div class="kb-content" id="kbContent"></div>
+        </div>
+      </div>
+      <div class="modal-footer">STRANYOV · RETICLE</div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
+  <script src="_help.js"></script>
+  <script src="_guide.js"></script>
 </body>
 </html>

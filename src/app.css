@@ -895,6 +895,62 @@ tr.is-silent td.silence { color: var(--danger); }
 .net-opt-check { flex-direction: row; align-items: center; gap: 6px; cursor: pointer; }
 .net-opt-check input { accent-color: var(--frame-active); margin: 0; }
 
+/* ---- guide modal ----
+ * Chrome for the knowledge-base panel. The panel itself (.kb-*), the overlay
+ * and the clip lightbox already come from _components.css — this is only the
+ * window around them, ported from the tools, with --surface (which this app
+ * does not define) resolved to --panel.
+ */
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  width: min(1000px, 96vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.8);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.modal-title {
+  font-family: var(--font);
+  font-size: 22px;
+  letter-spacing: 0.12em;
+  color: var(--white);
+}
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--dimmer);
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px;
+  cursor: pointer;
+  transition: color .2s;
+}
+.modal-close:hover { color: var(--white); }
+.modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.modal-footer {
+  padding: 12px 24px;
+  border-top: 1px solid var(--line);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--dimmer);
+  flex-shrink: 0;
+}
+
 /* ---- findings ----
  * Conclusions sit under the table, in the order the eye reaches them: the
  * numbers first, then what they add up to.

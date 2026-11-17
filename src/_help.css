@@ -1,0 +1,107 @@
+/* Copyright (c) 2026 Iurii Stranev (Yuri Stranyov) · stranyov.pro. All rights reserved. Terms: https://stranyov.pro/tools/terms */
+/*
+  Help / knowledge-base styles — the ONE copy, shared by every tool's About panel and the
+  standalone User Guide (tools/guide.html). The markup comes from _help.js
+  (StranyovHelp.render). Load after _tokens.css (and after _components.css where a tool has
+  it), before the tool's own inline <style>. Custom props like --surface / --white resolve
+  from each page's inline :root at use time.
+
+  - base rules = the About modal (compact);
+  - .kb-page = the guide page's roomier variant (set on the guide's <main>);
+  - .kb-eyebrow is also the eyebrow of the shared confirm / changelog dialogs (_util.js,
+    _changelog.js) — every page that shows those loads this file.
+*/
+
+/* ── About → knowledge-base modal frame (header / scrolling body / footer). The tool keeps
+      its own .modal look (border, shadow, header padding); this only sizes and scrolls it. ── */
+.modal.modal-kb { width: min(1000px, 96vw); max-width: none; max-height: 92vh; display: flex; flex-direction: column; overflow: hidden; }
+.modal.modal-kb > .modal-header, .modal.modal-kb > .modal-footer, .modal.modal-kb > .about-legal { flex-shrink: 0; }
+.modal.modal-kb > .modal-body { overflow-y: auto; min-height: 0; }
+
+.kb-eyebrow { font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--frame-active); margin-bottom: 4px; }
+.kb-lead { font-size: 12.5px; line-height: 1.6; color: var(--dim); max-width: 660px; }
+.kb-grid2 { display: grid; grid-template-columns: 186px 1fr; gap: 24px; align-items: start; }
+.kb-nav { position: sticky; top: 0; align-self: start; }
+.kb-nav .grp { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--dimmer); margin: 14px 6px 5px; }
+.kb-nav .grp:first-child { margin-top: 0; }
+.kb-nav a { display: block; font-size: 11.5px; color: var(--dim); padding: 5px 7px; border-left: 2px solid transparent; border-radius: 2px; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+.kb-nav a:hover { color: var(--white); background: rgba(var(--ink-rgb),0.05); }
+.kb-nav a.active { color: var(--frame-active); border-left-color: var(--frame-active); }
+.kb-nav a.reflink { margin-top: 2px; }
+.kb-sec-title { font-size: 9px; font-weight: var(--fw-regular); letter-spacing: 0.2em; text-transform: uppercase; color: var(--dimmer); margin: 26px 0 12px; }
+.kb-content > .kb-sec-title:first-child { margin-top: 0; }
+.kb-hero { display: grid; grid-template-columns: 1.35fr 1fr; gap: 18px; align-items: center; margin-bottom: 4px; }
+.kb-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.kb-feat .kb-meta { margin-top: 9px; }
+/* features without a clip: headline rows across the full width — the title, its text beside it, a hairline
+   between them (an intro without a clip is the accented hero line below) */
+.kb-rows { border-top: 1px solid var(--line2); }
+.kb-row { padding: 13px 2px 14px; border-bottom: 1px solid var(--line); }
+.kb-row .kb-meta { display: grid; grid-template-columns: 190px 1fr; gap: 22px; align-items: baseline; }
+.kb-row .kb-meta h3 { margin: 0; flex-wrap: wrap; row-gap: 4px; }
+.kb-row .kb-meta p { max-width: 640px; }
+.kb-cards + .kb-rows, .kb-hero + .kb-rows, .kb-rows + .kb-cards { margin-top: 22px; }
+.kb-hero.kb-text { grid-template-columns: 1fr; border-left: 2px solid var(--frame-active); padding: 2px 0 2px 16px; margin-bottom: 16px; }
+.kb-hero.kb-text .kb-meta p { font-size: 12.5px; max-width: 720px; }
+.kb-clip { position: relative; aspect-ratio: 16/10; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line2); cursor: zoom-in; background: var(--input-bg); transition: border-color .15s, transform .15s; }
+.kb-clip:hover { border-color: var(--frame-active); transform: translateY(-2px); }
+.kb-vid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.kb-clip .play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; transition: opacity .15s; }
+.kb-clip .play span { width: 40px; height: 40px; border-radius: 50%; background: rgba(var(--paper-rgb),0.72); border: 1px solid var(--card-border); display: flex; align-items: center; justify-content: center; color: var(--ink); font-size: 13px; padding-left: 2px; transition: background .15s, color .15s, transform .15s; }
+.kb-clip:hover .play span { background: var(--frame-active); color: var(--paper); transform: scale(1.08); }
+.kb-clip .dur { position: absolute; bottom: 7px; right: 7px; font-family: var(--mono); font-size: 9px; color: var(--ink); background: rgba(var(--paper-rgb),0.7); border-radius: 2px; padding: 1px 5px; transition: opacity .15s; }
+.kb-clip.playing .play, .kb-clip.playing .dur { opacity: 0; }
+.kb-meta h3 { font-size: 13px; font-weight: var(--fw-bold); color: var(--white); margin-bottom: 5px; display: flex; align-items: center; gap: 8px; letter-spacing: 0.01em; }
+.kb-meta p { font-size: 12px; line-height: 1.5; color: var(--dim); margin: 0; }
+.kb-hero .kb-meta h3 { font-size: 15px; }
+.kb-key { font-family: var(--mono); font-size: 10px; color: var(--frame-active); border: 1px solid var(--frame-active); border-radius: 3px; padding: 1px 6px; }
+.kb-ref { display: flex; flex-direction: column; gap: 8px; }
+.kb-ref-row { display: grid; grid-template-columns: 158px 1fr; gap: 14px; align-items: baseline; }
+.kb-k { font-family: var(--mono); font-size: 10.5px; color: var(--white); background: rgba(var(--ink-rgb),0.06); border: 1px solid var(--line2); border-radius: 2px; padding: 3px 8px; text-align: center; white-space: nowrap; }
+.kb-v { font-size: 12px; line-height: 1.5; color: var(--dim); }
+.kb-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 2000; padding: 4vmin; }
+.kb-lightbox.open { display: flex; }
+.kb-lightbox video { max-width: 92vw; max-height: 88vh; border: 1px solid var(--card-border); border-radius: var(--radius); box-shadow: 6px 6px 0 var(--action); background: #000; }
+.kb-lightbox .lb-close { position: absolute; top: 18px; right: 22px; width: 34px; height: 34px; border: 1px solid var(--line2); border-radius: var(--radius); background: var(--surface); color: var(--white); cursor: pointer; font-size: 14px; }
+
+/* ── the User Guide page (tools/guide.html): same blocks, roomier ── */
+.kb-page .kb-eyebrow { margin-bottom: 0; }
+.kb-page .kb-lead { font-size: 13px; max-width: 680px; }
+.kb-page .kb-grid2 { grid-template-columns: 200px 1fr; gap: 30px; }
+.kb-page .kb-nav { top: 20px; }
+.kb-page .kb-nav .grp { margin: 16px 6px 5px; }
+.kb-page .kb-nav .grp:first-child { margin-top: 0; }
+.kb-page .kb-nav a { font-size: 12px; padding: 5px 8px; }
+.kb-page .kb-sec-title { margin: 30px 0 14px; }
+.kb-page .kb-content > .kb-sec-title:first-child { margin-top: 0; }
+.kb-page .kb-hero { gap: 20px; }
+.kb-page .kb-cards { gap: 18px; }
+.kb-page .kb-feat .kb-meta { margin-top: 10px; }
+.kb-page .kb-row { padding: 16px 2px 17px; }
+.kb-page .kb-row .kb-meta { grid-template-columns: 230px 1fr; gap: 28px; }
+.kb-page .kb-row .kb-meta h3 { font-size: 15px; }
+.kb-page .kb-cards + .kb-rows, .kb-page .kb-hero + .kb-rows, .kb-page .kb-rows + .kb-cards { margin-top: 26px; }
+.kb-page .kb-hero.kb-text { margin-bottom: 18px; }
+.kb-page .kb-hero.kb-text .kb-meta p { font-size: 13px; }
+.kb-page .kb-clip .play span { width: 44px; height: 44px; font-size: 14px; padding-left: 3px; }
+.kb-page .kb-clip .dur { bottom: 8px; right: 8px; }
+.kb-page .kb-meta h3 { font-size: 14px; margin-bottom: 6px; }
+.kb-page .kb-meta p { font-size: 12.5px; line-height: 1.55; }
+.kb-page .kb-hero .kb-meta h3 { font-size: 16px; }
+.kb-page .kb-ref { gap: 9px; }
+.kb-page .kb-ref-row { grid-template-columns: 168px 1fr; gap: 16px; }
+.kb-page .kb-v { font-size: 12.5px; line-height: 1.55; }
+
+/* ── narrow screens (the guide page, and the About panel of the phone-friendly tools —
+      ltc / spec; the canvas tools are desktop-gated before this width) ── */
+@media (max-width: 760px) {
+  .kb-grid2, .kb-page .kb-grid2 { grid-template-columns: 1fr; gap: 8px; }
+  .kb-nav, .kb-page .kb-nav { position: static; display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .kb-nav .grp, .kb-page .kb-nav .grp { width: 100%; margin: 10px 4px 2px; }
+  .kb-nav a, .kb-page .kb-nav a { border-left: none; padding: 5px 9px; border: 1px solid var(--line2); border-radius: var(--radius); }
+  .kb-nav a.active { border-color: var(--frame-active); }
+  .kb-hero, .kb-cards { grid-template-columns: 1fr; }
+  .kb-ref-row, .kb-page .kb-ref-row { grid-template-columns: 1fr; gap: 3px; }
+  .kb-row .kb-meta, .kb-page .kb-row .kb-meta { grid-template-columns: 1fr; gap: 5px; }
+  .kb-k { justify-self: start; }
+}
