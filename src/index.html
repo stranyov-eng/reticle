@@ -219,6 +219,16 @@
         </select>
       </label>
 
+      <label class="net-opt" data-i18n-title="netPassesHint"><span data-i18n="netPasses">Passes</span>
+        <select id="netPasses">
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="5">5</option>
+          <option value="10">10</option>
+        </select>
+      </label>
+
       <label class="net-opt net-opt-check" data-i18n-title="netBypassHint">
         <input type="checkbox" id="netBypass" checked />
         <span data-i18n="netBypass">Bypass cache</span>
@@ -266,6 +276,7 @@
           <th class="num net-col-rw" id="netReadHead">read</th>
           <th class="num net-col-rw" id="netWriteHead">write</th>
           <th class="net-col-file" data-i18n="netFile">file read</th>
+          <th class="net-col-passes" data-i18n="netByPass" data-i18n-title="netByPassHint">per pass</th>
           <th class="num net-col-retrans" data-i18n="netRetrans" data-i18n-title="netRetransHint">retrans</th>
           <th class="net-col-via" data-i18n="netVia">via</th>
           <th class="net-col-status" data-i18n="netStatus">status</th>

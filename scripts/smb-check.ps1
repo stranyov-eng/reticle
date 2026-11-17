@@ -134,6 +134,7 @@ function Measure-Read {
         return [pscustomobject] @{
             MBs     = [math]::Round(($Source.Length / 1MB) / $seconds)
             Partial = $false
+            Via     = 'robocopy'
         }
     }
 
@@ -157,6 +158,10 @@ function Measure-Read {
     return [pscustomobject] @{
         MBs     = [math]::Round(($done / 1MB) / $sw.Elapsed.TotalSeconds)
         Partial = $true
+        # Named in the output: robocopy cannot copy part of a file, so an
+        # oversized one is read here instead, and a report that said "measured
+        # by robocopy" for both halves would be claiming more than it did.
+        Via     = 'slice'
     }
 }
 
@@ -194,7 +199,10 @@ try {
         foreach ($address in $addresses) {
             $root = "\\$address\$Share"
             $row = [pscustomobject] @{
-                Pass = $pass; Server = $address; ReadMBs = $null; WriteMBs = $null; File = ''; Note = ''
+                # The clock goes in the row: when a fault wanders between runs,
+                # the time a reading was taken is half of what identifies it.
+                Pass = $pass; When = (Get-Date -Format 'HH:mm:ss'); Server = $address
+                ReadMBs = $null; WriteMBs = $null; ReadVia = ''; File = ''; Note = ''
             }
 
             Write-Host ("{0,-16} " -f $address) -NoNewline

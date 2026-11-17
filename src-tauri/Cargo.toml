@@ -1,6 +1,6 @@
 [package]
 name = "reticle"
-version = "0.7.1"
+version = "0.8.0"
 description = "Protocol monitor for OSC, MIDI and HTTP"
 authors = ["Iurii Stranev"]
 edition = "2021"

@@ -240,6 +240,14 @@ Produces three artifacts:
 Builds are unsigned: on first launch Windows shows SmartScreen
 ("More info" → "Run anyway").
 
+- **Several passes in one run.** The row is swept back to back and every
+  sweep's read speed is kept, side by side, never averaged. A fault that moves
+  between sweeps is a different animal from one that sits still — and averaging
+  is exactly what would hide it. When a target's figure moves, the findings say
+  so *before* naming the slow ones, because a setting does not heal itself
+  thirty seconds later and nobody should be sent to reconfigure a machine that
+  was fine on the next pass.
+
 ### Checking the tool itself
 
 `scripts/smb-check.ps1` measures the same shares using nothing but robocopy and
@@ -260,6 +268,20 @@ contention or an intermittent fault, and a different culprit.
 
 Same answer from both tools means the network. A disagreement means this app,
 and is worth reporting.
+
+For a stricter comparison, `cargo run --release --example netprobe` runs the
+Network tab's measurement without the window around it — the same
+`netspeed::run_target` the interface calls, on the command line:
+
+```bash
+cargo run --release --example netprobe -- --mode read --buffered --threads 1 --size 1024 "\\192.168.2.11\share\objects"
+```
+
+Pointed at the same file, the same volume, one stream and buffered, it and a
+plain `FileStream` loop are doing identical work, so any gap between them is
+the measurement rather than the network. Interleave the two per server rather
+than running one tool after the other: when the fault wanders, figures taken
+minutes apart prove nothing.
 
 ## Testing without hardware
 

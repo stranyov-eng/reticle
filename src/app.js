@@ -147,6 +147,14 @@ const I18N = {
     netPhaseIdle: 'working…',
     netProgOf: (done, total) => `${done} / ${total} MB`,
     netProgStep: (i, n) => `${i} of ${n}`,
+    netPasses: 'Passes',
+    netPassesHint: 'Sweep the whole row this many times, back to back. A fault that moves between sweeps is a different animal from one that sits still, and one pass cannot tell them apart.',
+    netByPass: 'per pass',
+    netByPassHint: 'Read speed from each sweep, in order. Averaging them would hide the only thing worth seeing.',
+    netPassDetail: (pass, read, write) => `pass ${pass}: read ${read}, write ${write} MB/s`,
+    netProgPass: (pass, passes) => `pass ${pass}/${passes}`,
+    netDonePasses: (n, passes) => (passes > 1 ? `${n} measured over ${passes} passes` : `${n} measured`),
+    netFindWanders: (spans) => `This moves between sweeps: ${spans} MB/s. A fault that comes and goes within one run is not a setting on those machines — a setting does not heal itself thirty seconds later. Look at what they were doing at the time: playback, a render, a backup, anything sharing the array or the uplink.`,
     netOneStream: 'one stream measures a single stream, not the link',
     mbps: (n) => `${Math.round(n)} MB/s`,
     ms: (n) => `${n.toFixed(1)} ms`,
@@ -1155,6 +1163,7 @@ function saveNetOpts() {
     threads: $('netThreads').value,
     mode: $('netMode').value,
     bypass: $('netBypass').checked,
+    passes: $('netPasses').value,
     via: $('netVia').value,
   }));
 }
@@ -1173,6 +1182,7 @@ function restoreNetOpts() {
   set('netMode', saved.mode);
   // A boolean has no empty value to fall back on, so it is read directly.
   if (typeof saved.bypass === 'boolean') $('netBypass').checked = saved.bypass;
+  set('netPasses', saved.passes);
   // The adapter is restored after the interface list arrives, since the
   // option it refers to does not exist yet at this point.
   if (saved.via) restoreNetOpts.pendingVia = saved.via;
@@ -1450,6 +1460,13 @@ function netRowFor(target) {
   file.textContent = '—';
   cells.file = file;
 
+  // One figure per sweep, side by side. A fault that moves shows itself here
+  // and nowhere else: a single number per row cannot say "23, then 496".
+  const byPass = document.createElement('td');
+  byPass.className = 'bypass';
+  byPass.textContent = '—';
+  cells.byPass = byPass;
+
   // Retransmissions: the one number that tells a broken wire from a bad
   // setting, since a misconfigured link is slow but loses nothing.
   const retrans = document.createElement('td');
@@ -1491,7 +1508,7 @@ function netRowFor(target) {
 
   cells.via.className = 'via';   // left-aligned: it is a name, not a number
 
-  tr.append(pathTd, cells.latency, cells.read, cells.write, file, retrans, cells.via, status, acts);
+  tr.append(pathTd, cells.latency, cells.read, cells.write, file, byPass, retrans, cells.via, status, acts);
   entry = { tr, cells };
   netRows.set(target.id, entry);
   return entry;
@@ -1530,7 +1547,17 @@ function applyNetResult(result) {
   const c = entry.cells;
   entry.tr.classList.remove('is-running');
   entry.tr.style.removeProperty('--row-prog');
-  if (netRunState) netRunState.done.add(result.id);
+
+  if (netRunState) {
+    netRunState.done.add(result.id);
+    if (!netHistory.has(result.id)) netHistory.set(result.id, []);
+    netHistory.get(result.id).push({
+      pass: netRunState.pass || 1,
+      read: result.read_mbps || 0,
+      write: result.write_mbps || 0,
+      retrans: result.read_retrans,
+    });
+  }
 
   c.latency.textContent = result.latency_ms === null || result.latency_ms === undefined
     ? '—' : t('ms', result.latency_ms);
@@ -1549,6 +1576,18 @@ function applyNetResult(result) {
   c.file.title = result.read_file
     ? t('netFileSize', result.read_file, Math.round(result.read_file_bytes / (1024 * 1024)))
     : '';
+
+  // Every sweep's read speed in order, so a number that moves is read as
+  // movement rather than as whatever it happened to be last.
+  const history = netHistory.get(result.id) || [];
+  const best = Math.max(0, ...[...netResults.values()].map((r) => r.read_mbps || 0));
+  c.byPass.textContent = history.length > 1
+    ? history.map((h) => Math.round(h.read)).join(' · ')
+    : '—';
+  c.byPass.title = history
+    .map((h) => t('netPassDetail', h.pass, Math.round(h.read), Math.round(h.write)))
+    .join('\n');
+  c.byPass.classList.toggle('slow', history.length > 1 && wanders(history, best));
 
   // Both phases are counted; the read one is shown, because that is the
   // direction in question when a read is slow and a write is not.
@@ -1595,7 +1634,26 @@ const FIND = {
   retrans: 200,
   /** A speed-up this large between buffered and unbuffered is conclusive. */
   bypassGain: 3,
+  /** Fastest sweep this many times the slowest, and the fault is moving. */
+  wander: 3,
 };
+
+/**
+ * Did this target's read speed move between sweeps?
+ *
+ * Only counted when one of the sweeps was actually bad: a target that ran at
+ * 480 and then 1400 varies, but it is not a fault, and calling it one would
+ * bury the rows that matter.
+ */
+function wanders(history, best) {
+  if (!history || history.length < 2) return false;
+  const reads = history.map((h) => h.read).filter((v) => v > 0);
+  if (reads.length < 2) return false;
+
+  const lo = Math.min(...reads);
+  const hi = Math.max(...reads);
+  return lo > 0 && hi / lo >= FIND.wander && best > 0 && lo < best * FIND.slowShare;
+}
 
 /** "a", "a and b", "a, b and c" — a list meant to be read, not parsed. */
 function joinNames(names) {
@@ -1641,6 +1699,19 @@ function diagnose(rows, opts, previous) {
   const noisy = counted.filter((r) => r.retrans >= FIND.retrans);
   const wireAtFault = noisy.length > 0;
 
+  // A fault that moves between sweeps is the most misleading thing on this
+  // page, because every single-pass reading of it is true and useless. It is
+  // said before the slow list, so nobody walks off to reconfigure a machine
+  // that was fine thirty seconds later.
+  const moving = usable.filter((r) => wanders(r.history, best));
+  if (moving.length) {
+    const spans = moving.map((r) => {
+      const reads = r.history.map((h) => h.read).filter((v) => v > 0);
+      return `${named(r)} ${mbpsRound(Math.min(...reads))}–${mbpsRound(Math.max(...reads))}`;
+    });
+    out.push({ tone: 'bad', text: t('netFindWanders', joinNames(spans)) });
+  }
+
   if (slow.length) {
     const lo = Math.min(...slow.map((r) => r.read));
     const hi = Math.max(...slow.map((r) => r.read));
@@ -1652,7 +1723,7 @@ function diagnose(rows, opts, previous) {
     // Several machines landing on the same figure despite different latencies
     // is the signature of something they share, not of several faults — but
     // only while nothing is being retransmitted, which would explain it better.
-    if (!wireAtFault && slow.length >= 2 && hi > 0 && (hi - lo) / hi <= FIND.spread) {
+    if (!wireAtFault && !moving.length && slow.length >= 2 && hi > 0 && (hi - lo) / hi <= FIND.spread) {
       out.push({ tone: 'hint', text: t('netFindUniform', slow.length) });
     }
   } else if (reads.length) {
@@ -1712,6 +1783,7 @@ function findingsInput() {
       read: result.read_mbps || 0,
       write: result.write_mbps || 0,
       retrans: result.read_retrans,
+      history: netHistory.get(target.id) || [],
     }));
 }
 
@@ -1999,7 +2071,13 @@ async function exportNetReport() {
  * and a ticker samples them, so the bar costs the measurement nothing.
  */
 
-let netRunState = null;   // { ids, mode, done } for the run in flight
+let netRunState = null;   // { ids, mode, done, pass, passes } for the run in flight
+/** Resolver for the pass currently in flight, set by runOnePass. */
+let netPassDone = null;
+/** id -> [{ pass, read, write, retrans }], one entry per sweep of the row.
+ *  A fault that moves between sweeps is only visible if the sweeps are kept
+ *  apart, so nothing here is averaged. */
+const netHistory = new Map();
 /** The run before this one, so buffered and unbuffered can be compared. Kept in
  *  memory only: a figure from last week is not a comparison, it is a guess. */
 let netLastRun = null;
@@ -2056,8 +2134,10 @@ function paintNetProgress(snap) {
     ? `${netPhaseLabel(snap.phase)} ${t('netProgOf', mb(snap.done), mb(snap.total))}`
     : netPhaseLabel(snap.phase);
 
+  const { pass, passes } = netRunState;
+  const sweep = passes > 1 ? `${t('netProgPass', pass, passes)} · ` : '';
   $('netProgText').textContent =
-    `${t('netProgStep', i + 1, ids.length)} · ${netLabelFor(snap.id)} · ${detail}`;
+    `${sweep}${t('netProgStep', i + 1, ids.length)} · ${netLabelFor(snap.id)} · ${detail}`;
 
   // The running row carries its own share as a hairline, so the eye does not
   // have to travel back to the toolbar to see which target is in flight.
@@ -2079,6 +2159,19 @@ function endNetProgress() {
   for (const { tr } of netRows.values()) tr.style.removeProperty('--row-prog');
 }
 
+/** One sweep of the row, resolved when the backend says it has finished. */
+function runOnePass(targets, opts) {
+  return new Promise((resolve) => {
+    netPassDone = resolve;
+    invoke('net_test', { targets: targets.map(({ id, path }) => ({ id, path })), opts })
+      .catch((e) => {
+        $('netNote').textContent = String(e);
+        netPassDone = null;
+        resolve(false);
+      });
+  });
+}
+
 async function runNetTest() {
   const targets = netTargets.filter((x) => x.path);
   if (!targets.length || netBusy) return;
@@ -2096,22 +2189,43 @@ async function runNetTest() {
   }
 
   const opts = currentNetOpts();
+  const passes = Math.max(1, Number($('netPasses').value) || 1);
 
   $('netFindings').hidden = true;
-  netRunState = { ids: targets.map((x) => x.id), mode: opts.mode, done: new Set() };
+  netHistory.clear();
   $('netProgFill').style.setProperty('--net-prog', '0');
-  $('netProgText').textContent = t('netProgStep', 1, targets.length);
   $('netProg').hidden = false;
 
-  try {
-    await invoke('net_test', { targets: targets.map(({ id, path }) => ({ id, path })), opts });
-  } catch (e) {
-    $('netNote').textContent = String(e);
-    netBusy = false;
-    $('netRun').disabled = false;
-    $('netStop').disabled = true;
-    endNetProgress();
+  // Passes run back to back rather than as one longer measurement: a fault
+  // that moves between sweeps is a different animal from one that sits still,
+  // and averaging them together would hide exactly the thing worth seeing.
+  let completed = 0;
+  for (let pass = 1; pass <= passes; pass++) {
+    netRunState = {
+      ids: targets.map((x) => x.id), mode: opts.mode, done: new Set(), pass, passes,
+    };
+    $('netProgText').textContent = t('netProgStep', 1, targets.length);
+
+    const finished = await runOnePass(targets, opts);
+    if (!finished) break;
+    completed = pass;
   }
+
+  netBusy = false;
+  $('netRun').disabled = false;
+  $('netStop').disabled = true;
+  endNetProgress();
+  $('netNote').textContent = completed < passes
+    ? t('netCancelled')
+    : t('netDonePasses', netResults.size, completed);
+
+  // Read while the previous run is still the previous run, then become it.
+  renderFindings();
+  netLastRun = {
+    mode: opts.mode,
+    bypass: opts.bypass_cache,
+    reads: Object.fromEntries(findingsInput().map((r) => [r.id, r.read])),
+  };
 }
 
 listen('nettest-start', (e) => {
@@ -2126,20 +2240,11 @@ listen('nettest-progress', (e) => paintNetProgress(e.payload));
 listen('nettest-result', (e) => applyNetResult(e.payload));
 
 listen('nettest-done', (e) => {
-  netBusy = false;
-  $('netRun').disabled = false;
-  $('netStop').disabled = true;
-  $('netNote').textContent = e.payload ? t('netCancelled') : t('netDone', netResults.size);
-  endNetProgress();
-
-  // Read while the previous run is still the previous run, then become it.
-  renderFindings();
-  const opts = currentNetOpts();
-  netLastRun = {
-    mode: opts.mode,
-    bypass: opts.bypass_cache,
-    reads: Object.fromEntries(findingsInput().map((r) => [r.id, r.read])),
-  };
+  // One pass of possibly several: the run is wound up by runNetTest, which is
+  // the only place that knows whether another sweep is still to come.
+  const resolve = netPassDone;
+  netPassDone = null;
+  if (resolve) resolve(!e.payload);
 });
 
 $('netRun').onclick = runNetTest;
@@ -2173,7 +2278,7 @@ $('netLink').onchange = applyLinkChoice;
 
 // Every setting is remembered as it changes, so the next launch starts where
 // the last one stopped rather than at defaults.
-for (const id of ['netSize', 'netThreads', 'netMode', 'netVia', 'netBypass']) {
+for (const id of ['netSize', 'netThreads', 'netMode', 'netVia', 'netBypass', 'netPasses']) {
   const el = $(id);
   const previous = el.onchange;
   el.onchange = (e) => {

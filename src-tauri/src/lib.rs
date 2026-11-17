@@ -13,7 +13,7 @@
 
 mod dmx;
 mod http;
-mod netspeed;
+pub mod netspeed;
 mod osc;
 mod raw;
 mod sacn;

@@ -541,7 +541,7 @@ tr.is-silent td.silence { color: var(--danger); }
   width: 100%;
   /* Below this the target column would be crushed to nothing. Scrolling the
    * table sideways is better than a layout that has silently given up. */
-  min-width: calc(1360px * var(--col-scale));
+  min-width: calc(1530px * var(--col-scale));
   table-layout: fixed;
   border-collapse: collapse;
   font-family: var(--mono);
@@ -848,6 +848,9 @@ tr.is-silent td.silence { color: var(--danger); }
 /* which file the read came from: context for the number beside it, so it is
  * dimmed rather than competing with it */
 .net-col-file { width: calc(220px * var(--col-scale)); }
+.net-col-passes { width: calc(170px * var(--col-scale)); }
+.net-table td.bypass { color: var(--dim); }
+.net-table td.bypass.slow { color: var(--danger); font-weight: var(--fw-bold); }
 .net-col-retrans { width: calc(90px * var(--col-scale)); }
 .net-table td.retrans { color: var(--dim); }
 .net-table td.retrans.slow { color: var(--danger); font-weight: var(--fw-bold); }
