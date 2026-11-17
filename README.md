@@ -131,6 +131,23 @@ Deliberate choices:
 - **Read mode is still there**, because the other question — "why does this
   copy crawl" — is about real media on a real volume, and only reading that
   media answers it.
+- **Cache bypass is a switch, not a policy.** Running the same targets with it
+  on and then off is the measurement that settles network against storage: the
+  unbuffered figure includes the far side's disk, the buffered one does not. A
+  server that crawls unbuffered and flies buffered has a disk problem, not a
+  link problem, and no single number could have told you that.
+- **TCP retransmissions are counted per target.** A link that is merely
+  configured badly moves data slowly and loses nothing; a bad transceiver, a
+  dirty strand or a broken offload retransmits constantly. The two are
+  indistinguishable in a throughput figure and obvious side by side. The
+  counter is machine-wide — Windows exposes no cheap per-connection equivalent
+  — so it is only read as a delta across one target's run.
+- **The findings are written out.** Under the table, and in the exported
+  report, in sentences: which targets are slow, whether reads and writes
+  disagree, what the retransmissions imply, and what to try next. The rules are
+  deliberately few and each has to be defensible out loud — a tool that guesses
+  confidently is worse than one that stays quiet, because a wrong lead costs an
+  afternoon of pulling good cable.
 - **Reads and writes bypass the cache.** Without that, a second pass over the
   same file is served from the client's RAM and reports memory bandwidth —
   6 GB/s over a 10 GbE link, which is nonsense that nevertheless looks like a

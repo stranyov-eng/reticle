@@ -219,6 +219,11 @@
         </select>
       </label>
 
+      <label class="net-opt net-opt-check" data-i18n-title="netBypassHint">
+        <input type="checkbox" id="netBypass" checked />
+        <span data-i18n="netBypass">Bypass cache</span>
+      </label>
+
       <label class="net-opt"><span data-i18n="netExpect">Expect</span>
         <select id="netVia"><option value="" data-i18n="netAnyAdapter">any adapter</option></select>
       </label>
@@ -261,6 +266,7 @@
           <th class="num net-col-rw" id="netReadHead">read</th>
           <th class="num net-col-rw" id="netWriteHead">write</th>
           <th class="net-col-file" data-i18n="netFile">file read</th>
+          <th class="num net-col-retrans" data-i18n="netRetrans" data-i18n-title="netRetransHint">retrans</th>
           <th class="net-col-via" data-i18n="netVia">via</th>
           <th class="net-col-status" data-i18n="netStatus">status</th>
           <th class="net-col-act"></th>
@@ -269,6 +275,9 @@
       <tbody id="netBody"></tbody>
     </table>
     </div>
+
+    <!-- What the numbers add up to, written out after a run. -->
+    <div class="net-findings" id="netFindings" hidden></div>
 
     <div class="empty" id="netEmpty">
       <p data-i18n="netEmptyTitle">No targets yet.</p>

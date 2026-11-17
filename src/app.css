@@ -539,7 +539,7 @@ tr.is-silent td.silence { color: var(--danger); }
   width: 100%;
   /* Below this the target column would be crushed to nothing. Scrolling the
    * table sideways is better than a layout that has silently given up. */
-  min-width: calc(1270px * var(--col-scale));
+  min-width: calc(1360px * var(--col-scale));
   table-layout: fixed;
   border-collapse: collapse;
   font-family: var(--mono);
@@ -846,6 +846,45 @@ tr.is-silent td.silence { color: var(--danger); }
 /* which file the read came from: context for the number beside it, so it is
  * dimmed rather than competing with it */
 .net-col-file { width: calc(220px * var(--col-scale)); }
+.net-col-retrans { width: calc(90px * var(--col-scale)); }
+.net-table td.retrans { color: var(--dim); }
+.net-table td.retrans.slow { color: var(--danger); font-weight: var(--fw-bold); }
+
+/* a checkbox among the dropdowns: same height, same rhythm */
+.net-opt-check { flex-direction: row; align-items: center; gap: 6px; cursor: pointer; }
+.net-opt-check input { accent-color: var(--frame-active); margin: 0; }
+
+/* ---- findings ----
+ * Conclusions sit under the table, in the order the eye reaches them: the
+ * numbers first, then what they add up to.
+ */
+.net-findings {
+  padding: 10px 12px 14px;
+  border-top: 1px solid var(--line2);
+  background: var(--panel2);
+}
+.net-findings[hidden] { display: none; }
+.net-findings h4 {
+  margin: 0 0 6px;
+  font-size: var(--fs-label);
+  font-weight: var(--fw-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tk-label);
+  color: var(--dim);
+}
+.net-finding {
+  margin: 0 0 4px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line2);
+  font-size: var(--fs-body);
+  line-height: 1.45;
+  color: var(--ink);
+  max-width: 108ch;
+}
+.net-finding.is-bad { border-left-color: var(--danger); }
+.net-finding.is-warn { border-left-color: var(--frame-active); }
+.net-finding.is-hint { border-left-color: var(--line2); color: var(--dim); }
+.net-finding.is-good { border-left-color: var(--accent); color: var(--dim); }
 .net-table td.file { color: var(--dim); }
 .net-table td.read, .net-table td.write { line-height: 1.3; }
 .net-table td.via { color: var(--dim); font-family: var(--mono); }

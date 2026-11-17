@@ -121,6 +121,23 @@ const I18N = {
     netDone: (n) => `${n} measured`,
     netCancelled: 'stopped',
     netFile: 'file read',
+    netBypass: 'Bypass cache',
+    netBypassHint: 'Ask for unbuffered I/O. On SMB 3.0.2 and later this travels to the server, which then skips its own cache too — so the figure includes the far side\'s disk. Run the same test with it off and the pair of numbers separates a slow link from a slow array.',
+    netRetrans: 'retrans',
+    netRetransHint: 'TCP segments retransmitted while this target was measured. Machine-wide, so it only means something during a run. Thousands point at the cable, the transceiver or a driver; none at all points at configuration.',
+    netRetransSplit: (read, write) => `read ${read} · write ${write}`,
+    netBufferedTag: 'buffered',
+
+    netFindings: 'What this looks like',
+    netFindAsym: (names, ratio) => `Reads collapse while writes stay normal on ${names} — ${ratio}× apart. Only one direction of the link is in trouble, and on fibre that is a different strand from the one the writes used.`,
+    netFindSlowGroup: (names, lo, hi, best) => `${names} read at ${lo}–${hi} MB/s against ${best} elsewhere.`,
+    netFindUniform: (n) => `Those ${n} land on nearly the same number despite different latencies. ${n} independent faults would scatter; one shared setting would not — look for what those machines have in common rather than at each one separately.`,
+    netFindRetransHigh: (names, n) => `${names} retransmitted ${n} segments during the run. That is the wire or a driver, not a setting: check the port error counters at the switch and the transceiver on the slow side.`,
+    netFindRetransNone: 'No retransmissions worth speaking of, so every packet is arriving first time. A clean wire that still crawls points at configuration or at the far side\'s disk, not at the cable.',
+    netFindBypassCompare: (names, from, to) => `With the cache in play ${names} read at ${to} MB/s against ${from} unbuffered. The wire can clearly carry it, so what is slow is the unbuffered path — on SMB that means the server\'s own disk read, not the network.`,
+    netFindBypassHintTry: 'Run this again with "Bypass cache" off: if the slow ones speed up, the link is fine and the far side\'s disk is the bottleneck.',
+    netFindOneStream: 'One stream measures one stream. A single SMB connection runs out of a CPU core long before it runs out of 10 GbE — raise it to 4 or 8 before reading anything into these numbers.',
+    netFindAllWell: (lo, hi) => `Nothing stands out — ${lo}–${hi} MB/s across the board.`,
     netFileSize: (name, mb) => `${name} — ${mb} MB`,
     netPhaseProbe: 'reaching the host…',
     netPhaseRead: 'reading',
@@ -1135,6 +1152,7 @@ function saveNetOpts() {
     size: $('netSize').value,
     threads: $('netThreads').value,
     mode: $('netMode').value,
+    bypass: $('netBypass').checked,
     via: $('netVia').value,
   }));
 }
@@ -1151,6 +1169,8 @@ function restoreNetOpts() {
   set('netSize', saved.size);
   set('netThreads', saved.threads);
   set('netMode', saved.mode);
+  // A boolean has no empty value to fall back on, so it is read directly.
+  if (typeof saved.bypass === 'boolean') $('netBypass').checked = saved.bypass;
   // The adapter is restored after the interface list arrives, since the
   // option it refers to does not exist yet at this point.
   if (saved.via) restoreNetOpts.pendingVia = saved.via;
@@ -1205,6 +1225,7 @@ function saveNetPreset() {
     size_mb: Number($('netSize').value),
     threads: Number($('netThreads').value),
     mode: $('netMode').value,
+    bypass: $('netBypass').checked,
     link: $('netLink').value,
     via: $('netVia').value,
   };
@@ -1240,6 +1261,8 @@ function applyNetPreset(name) {
   set('netMode', preset.mode);
   set('netLink', preset.link);
   set('netVia', preset.via);
+  // Presets saved before this setting existed were all taken unbuffered.
+  $('netBypass').checked = preset.bypass !== false;
 
   paintNetWarn();
   applyLinkChoice();
@@ -1414,6 +1437,13 @@ function netRowFor(target) {
   file.textContent = '—';
   cells.file = file;
 
+  // Retransmissions: the one number that tells a broken wire from a bad
+  // setting, since a misconfigured link is slow but loses nothing.
+  const retrans = document.createElement('td');
+  retrans.className = 'num retrans';
+  retrans.textContent = '—';
+  cells.retrans = retrans;
+
   const status = document.createElement('td');
   status.className = 'status';
   cells.status = status;
@@ -1448,7 +1478,7 @@ function netRowFor(target) {
 
   cells.via.className = 'via';   // left-aligned: it is a name, not a number
 
-  tr.append(pathTd, cells.latency, cells.read, cells.write, file, cells.via, status, acts);
+  tr.append(pathTd, cells.latency, cells.read, cells.write, file, retrans, cells.via, status, acts);
   entry = { tr, cells };
   netRows.set(target.id, entry);
   return entry;
@@ -1507,6 +1537,15 @@ function applyNetResult(result) {
     ? t('netFileSize', result.read_file, Math.round(result.read_file_bytes / (1024 * 1024)))
     : '';
 
+  // Both phases are counted; the read one is shown, because that is the
+  // direction in question when a read is slow and a write is not.
+  const hasRetrans = result.read_retrans !== null && result.read_retrans !== undefined;
+  c.retrans.textContent = hasRetrans ? String(result.read_retrans) : '—';
+  c.retrans.title = hasRetrans
+    ? t('netRetransSplit', result.read_retrans, result.write_retrans ?? 0)
+    : '';
+  c.retrans.classList.toggle('slow', hasRetrans && result.read_retrans >= FIND.retrans);
+
   const via = result.via_adapter || result.via_ip;
   c.via.textContent = via || '—';
   c.via.title = result.via_ip || '';
@@ -1525,11 +1564,183 @@ function applyNetResult(result) {
   renderNetTable();
 }
 
+/* ---------- findings ----------
+ * The table answers "how fast"; these answer "so what". The rules are
+ * deliberately few and each one has to be defensible out loud — a tool that
+ * guesses confidently is worse than one that stays quiet, because a wrong lead
+ * costs an afternoon of pulling good cable.
+ */
+
+const FIND = {
+  /** Read this many times below write is a one-direction problem. */
+  asymmetry: 3,
+  /** Below this share of the best read counts as slow. */
+  slowShare: 0.5,
+  /** Readings this close together are "the same number". */
+  spread: 0.15,
+  /** Retransmissions in one target's run worth calling out. */
+  retrans: 200,
+  /** A speed-up this large between buffered and unbuffered is conclusive. */
+  bypassGain: 3,
+};
+
+/** "a", "a and b", "a, b and c" — a list meant to be read, not parsed. */
+function joinNames(names) {
+  if (names.length <= 1) return names[0] || '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+const mbpsRound = (v) => Math.round(v);
+
+/**
+ * Turn a finished run into plain statements.
+ *
+ * Pure on purpose: everything it needs arrives as arguments, so the rules can
+ * be exercised against made-up runs without a network.
+ */
+function diagnose(rows, opts, previous) {
+  const out = [];
+  const named = (r) => r.name;
+  const usable = rows.filter((r) => r.read || r.write);
+  if (!usable.length) return out;
+
+  if (Number(opts.threads) === 1) {
+    out.push({ tone: 'warn', text: t('netFindOneStream') });
+  }
+
+  const reads = usable.filter((r) => r.read).map((r) => r.read);
+  const best = Math.max(0, ...reads);
+  const slow = usable.filter((r) => r.read && best > 0 && r.read < best * FIND.slowShare);
+
+  // Reads bad, writes fine: the two directions are not the same wire, the same
+  // queue or the same offload, and on fibre not even the same strand.
+  const lopsided = usable.filter((r) => r.read && r.write && r.write / r.read >= FIND.asymmetry);
+  if (lopsided.length) {
+    const worst = Math.max(...lopsided.map((r) => r.write / r.read));
+    out.push({ tone: 'bad', text: t('netFindAsym', joinNames(lopsided.map(named)), worst.toFixed(0)) });
+  }
+
+  // Retransmissions decide which story the rest of the findings tell, so they
+  // are weighed before anything is said: pointing at a shared setting while the
+  // wire is visibly dropping packets would send someone the wrong way entirely.
+  const watched = slow.length ? slow : usable;
+  const counted = watched.filter((r) => r.retrans !== null && r.retrans !== undefined);
+  const noisy = counted.filter((r) => r.retrans >= FIND.retrans);
+  const wireAtFault = noisy.length > 0;
+
+  if (slow.length) {
+    const lo = Math.min(...slow.map((r) => r.read));
+    const hi = Math.max(...slow.map((r) => r.read));
+    out.push({
+      tone: 'bad',
+      text: t('netFindSlowGroup', joinNames(slow.map(named)), mbpsRound(lo), mbpsRound(hi), mbpsRound(best)),
+    });
+
+    // Several machines landing on the same figure despite different latencies
+    // is the signature of something they share, not of several faults — but
+    // only while nothing is being retransmitted, which would explain it better.
+    if (!wireAtFault && slow.length >= 2 && hi > 0 && (hi - lo) / hi <= FIND.spread) {
+      out.push({ tone: 'hint', text: t('netFindUniform', slow.length) });
+    }
+  } else if (reads.length) {
+    out.push({ tone: 'good', text: t('netFindAllWell', mbpsRound(Math.min(...reads)), mbpsRound(best)) });
+  }
+
+  if (wireAtFault) {
+    const total = noisy.reduce((sum, r) => sum + r.retrans, 0);
+    out.push({ tone: 'bad', text: t('netFindRetransHigh', joinNames(noisy.map(named)), total) });
+  } else if (counted.length && slow.length) {
+    out.push({ tone: 'hint', text: t('netFindRetransNone') });
+  }
+
+  // The decisive comparison, when the same targets have been run both ways.
+  if (previous && previous.mode === opts.mode && previous.bypass !== opts.bypass_cache) {
+    const gained = usable.filter((r) => {
+      const was = previous.reads[r.id];
+      return r.read && was && (opts.bypass_cache ? was / r.read : r.read / was) >= FIND.bypassGain;
+    });
+    if (gained.length) {
+      // Always phrased buffered-vs-unbuffered, whichever way round it was run.
+      const from = opts.bypass_cache ? gained.map((r) => r.read) : gained.map((r) => previous.reads[r.id]);
+      const to = opts.bypass_cache ? gained.map((r) => previous.reads[r.id]) : gained.map((r) => r.read);
+      out.push({
+        tone: 'hint',
+        text: t(
+          'netFindBypassCompare',
+          joinNames(gained.map(named)),
+          mbpsRound(Math.min(...from)),
+          mbpsRound(Math.max(...to)),
+        ),
+      });
+    }
+  } else if (slow.length && opts.bypass_cache && !wireAtFault) {
+    // Pointless advice while packets are being lost: the cache is not what is
+    // slowing a link that cannot deliver a packet first time.
+    out.push({ tone: 'hint', text: t('netFindBypassHintTry') });
+  }
+
+  return out;
+}
+
+/** The rows as the rules want them: names resolved, errors dropped. */
+function findingsInput() {
+  return netTargets
+    .map((target) => ({ target, result: netResults.get(target.id) }))
+    .filter(({ result }) => result && !result.error)
+    .map(({ target, result }) => ({
+      id: target.id,
+      name: netLabelFor(target.id),
+      read: result.read_mbps || 0,
+      write: result.write_mbps || 0,
+      retrans: result.read_retrans,
+    }));
+}
+
+function renderFindings() {
+  const box = $('netFindings');
+  const rows = findingsInput();
+  const found = diagnose(rows, currentNetOpts(), netLastRun);
+
+  box.textContent = '';
+  box.hidden = found.length === 0;
+  if (!found.length) return;
+
+  const head = document.createElement('h4');
+  head.textContent = t('netFindings');
+  box.appendChild(head);
+
+  for (const { tone, text } of found) {
+    const line = document.createElement('p');
+    line.className = `net-finding is-${tone}`;
+    line.textContent = text;
+    box.appendChild(line);
+  }
+}
+
 /* ---------- report image ----------
  * Drawn by hand onto a canvas rather than screenshotted or sent through a
  * library: the output stays predictable, carries the test parameters that a
  * screenshot of the table would lose, and the app keeps no extra dependency.
  */
+
+/** Break text into lines that fit, the one thing canvas will not do for you. */
+function wrapText(ctx, text, maxWidth) {
+  const lines = [];
+  let line = '';
+
+  for (const word of text.split(' ')) {
+    const next = line ? `${line} ${word}` : word;
+    if (line && ctx.measureText(next).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+
+  if (line) lines.push(line);
+  return lines;
+}
 
 /** Trim a path from the left: the tail (host and folder) is what identifies it. */
 function trimLeft(ctx, text, maxWidth) {
@@ -1565,12 +1776,23 @@ function drawReport() {
   const pad = 28;
   const rowH = 30;
   const headH = 108;
-  const footH = 52;
+  const findingLineH = 17;
   // The file read is part of the evidence, not a detail: two servers measured
   // against different files are not comparable, and a report that hides which
   // one was used cannot be checked later.
-  const cols = { target: pad, latency: 620, read: 720, write: 890, file: 1060, via: 1340 };
-  const width = 1580;
+  const cols = { target: pad, latency: 600, read: 690, write: 860, file: 1030, retrans: 1290, via: 1390 };
+  const width = 1630;
+
+  // The findings go in the file too. A report that travels to someone who was
+  // not standing there needs to say what it means, not only what it measured.
+  const measure = document.createElement('canvas').getContext('2d');
+  measure.font = '400 12px "Segoe UI", sans-serif';
+  // A blank line between statements, so several findings read as several
+  // findings rather than one paragraph.
+  const findingLines = diagnose(findingsInput(), currentNetOpts(), netLastRun)
+    .flatMap(({ text }, i) => (i ? [''] : []).concat(wrapText(measure, text, width - pad * 2)));
+
+  const footH = 52 + (findingLines.length ? 22 + findingLines.length * findingLineH : 0);
   const height = headH + rowsData.length * rowH + footH;
 
   const canvas = document.createElement('canvas');
@@ -1599,6 +1821,9 @@ function drawReport() {
     `${$('netThreads').value} streams`,
     $('netMode').options[$('netMode').selectedIndex].textContent.toLowerCase(),
     sel.options[sel.selectedIndex].textContent,
+    // Buffered and unbuffered figures are not comparable, so which one this is
+    // belongs on the page rather than in whoever exported it's memory.
+    ...($('netBypass').checked ? [] : [t('netBufferedTag')]),
   ].join('  ·  ');
 
   ctx.fillStyle = colour.dim;
@@ -1619,6 +1844,7 @@ function drawReport() {
   ctx.fillText('READ · % OF LINK', cols.read, 97);
   ctx.fillText('WRITE · % OF LINK', cols.write, 97);
   ctx.fillText('FILE READ', cols.file, 97);
+  ctx.fillText('RETRANS', cols.retrans, 97);
   ctx.fillText('VIA', cols.via, 97);
 
   const best = Math.max(...rowsData.map((r) => r.result.read_mbps || 0));
@@ -1677,6 +1903,14 @@ function drawReport() {
       y,
     );
 
+    // Retransmissions earn red at the same threshold as the table: zero and
+    // "thousands" mean opposite things and must not read alike.
+    const lost = result.read_retrans;
+    const hasLost = lost !== null && lost !== undefined;
+    ctx.font = mono(13);
+    ctx.fillStyle = hasLost && lost >= FIND.retrans ? colour.bad : colour.dim;
+    ctx.fillText(hasLost ? String(lost) : '—', cols.retrans, y);
+
     ctx.font = mono(13);
     ctx.fillStyle = colour.dim;
     ctx.fillText(result.via_adapter || result.via_ip || '—', cols.via, y);
@@ -1689,6 +1923,8 @@ function drawReport() {
   });
 
   const speeds = rowsData.map((r) => r.result.read_mbps || r.result.write_mbps).filter(Boolean);
+  const summaryY = headH + rowsData.length * rowH + 22;
+
   if (speeds.length) {
     const lo = Math.round(Math.min(...speeds));
     const hi = Math.round(Math.max(...speeds));
@@ -1697,8 +1933,20 @@ function drawReport() {
     ctx.fillText(
       t('netReportSummary', rowsData.length, lo, hi, (hi / lo).toFixed(1)),
       pad,
-      height - 20,
+      summaryY,
     );
+  }
+
+  if (findingLines.length) {
+    ctx.fillStyle = colour.dim;
+    ctx.font = sans(11, 500);
+    ctx.fillText(t('netFindings').toUpperCase(), pad, summaryY + 26);
+
+    ctx.font = sans(12);
+    ctx.fillStyle = colour.ink;
+    findingLines.forEach((line, i) => {
+      ctx.fillText(line, pad, summaryY + 46 + i * findingLineH);
+    });
   }
 
   return canvas;
@@ -1732,14 +1980,30 @@ async function exportNetReport() {
  * and a ticker samples them, so the bar costs the measurement nothing.
  */
 
-let netRunState = null;   // { ids, mode } for the run in flight
+let netRunState = null;   // { ids, mode, done } for the run in flight
+/** The run before this one, so buffered and unbuffered can be compared. Kept in
+ *  memory only: a figure from last week is not a comparison, it is a guess. */
+let netLastRun = null;
+
+/** The test settings, in the one shape the backend and the findings both use. */
+function currentNetOpts() {
+  return {
+    size_mb: Number($('netSize').value),
+    threads: Number($('netThreads').value),
+    mode: $('netMode').value,
+    bypass_cache: $('netBypass').checked,
+  };
+}
 
 /** How a machine is best referred to: its name if the network knows one. */
 function netLabelFor(id) {
   const target = netTargets.find((x) => x.id === id);
   if (!target) return '';
   const host = hostOfUnc(target.path);
-  return (host && hostNames.get(host)) || host || target.path;
+  // The result carries a name too: the test resolves one even when the
+  // background lookup for the list has not come back, or never will.
+  const fromResult = netResults.get(id)?.host_name;
+  return fromResult || (host && hostNames.get(host)) || host || target.path;
 }
 
 function netPhaseLabel(phase) {
@@ -1812,12 +2076,9 @@ async function runNetTest() {
     }
   }
 
-  const opts = {
-    size_mb: Number($('netSize').value),
-    threads: Number($('netThreads').value),
-    mode: $('netMode').value,
-  };
+  const opts = currentNetOpts();
 
+  $('netFindings').hidden = true;
   netRunState = { ids: targets.map((x) => x.id), mode: opts.mode, done: new Set() };
   $('netProgFill').style.setProperty('--net-prog', '0');
   $('netProgText').textContent = t('netProgStep', 1, targets.length);
@@ -1851,6 +2112,15 @@ listen('nettest-done', (e) => {
   $('netStop').disabled = true;
   $('netNote').textContent = e.payload ? t('netCancelled') : t('netDone', netResults.size);
   endNetProgress();
+
+  // Read while the previous run is still the previous run, then become it.
+  renderFindings();
+  const opts = currentNetOpts();
+  netLastRun = {
+    mode: opts.mode,
+    bypass: opts.bypass_cache,
+    reads: Object.fromEntries(findingsInput().map((r) => [r.id, r.read])),
+  };
 });
 
 $('netRun').onclick = runNetTest;
@@ -1883,7 +2153,7 @@ $('netLink').onchange = applyLinkChoice;
 
 // Every setting is remembered as it changes, so the next launch starts where
 // the last one stopped rather than at defaults.
-for (const id of ['netSize', 'netThreads', 'netMode', 'netVia']) {
+for (const id of ['netSize', 'netThreads', 'netMode', 'netVia', 'netBypass']) {
   const el = $(id);
   const previous = el.onchange;
   el.onchange = (e) => {

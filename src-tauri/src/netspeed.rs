@@ -89,7 +89,17 @@ impl AlignedBuf {
 /// Open for reading past the cache, falling back to a normal open where the
 /// filesystem refuses. The fallback is reported, because a cached number is
 /// worth knowing about rather than silently trusting.
-fn open_read(path: &Path) -> std::io::Result<(fs::File, bool)> {
+///
+/// `bypass` turns the flag off deliberately. That is not a worse measurement,
+/// it is a different one: on SMB 3.0.2 and later the unbuffered flag travels to
+/// the far side as `SMB2_READFLAG_READ_UNBUFFERED`, so the server skips its own
+/// cache too and the figure includes its disk. Running the same test both ways
+/// is what separates a slow link from a slow array.
+fn open_read(path: &Path, bypass: bool) -> std::io::Result<(fs::File, bool)> {
+    if !bypass {
+        return fs::File::open(path).map(|f| (f, false));
+    }
+
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -110,7 +120,11 @@ fn open_read(path: &Path) -> std::io::Result<(fs::File, bool)> {
 
 /// Create for writing past the cache, so the clock measures the server rather
 /// than the client's write-behind buffer.
-fn create_write(path: &Path) -> std::io::Result<(fs::File, bool)> {
+fn create_write(path: &Path, bypass: bool) -> std::io::Result<(fs::File, bool)> {
+    if !bypass {
+        return fs::File::create(path).map(|f| (f, false));
+    }
+
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -129,6 +143,63 @@ fn create_write(path: &Path) -> std::io::Result<(fs::File, bool)> {
     {
         fs::File::create(path).map(|f| (f, false))
     }
+}
+
+/// TCP retransmissions, which is the question "is the wire delivering?" asked
+/// in a number.
+///
+/// A link that is merely configured badly moves data slowly and retransmits
+/// nothing; a bad transceiver, a dirty strand or a broken offload retransmits
+/// constantly. The two look identical in a throughput figure and nothing alike
+/// here, which is the whole reason to collect it.
+///
+/// The counter is machine-wide — Windows exposes no cheap per-connection
+/// equivalent — so it is only read as a delta across one target's measurement,
+/// where this test is what the machine is doing.
+#[cfg(windows)]
+mod tcpstat {
+    /// `MIB_TCPSTATS`: fifteen DWORDs, of which one is wanted.
+    #[repr(C)]
+    struct MibTcpStats {
+        fields: [u32; 15],
+    }
+
+    /// Index of `dwRetransSegs`.
+    const RETRANS_SEGS: usize = 11;
+    /// `AF_INET`.
+    const AF_INET: u32 = 2;
+
+    #[link(name = "iphlpapi")]
+    extern "system" {
+        fn GetTcpStatisticsEx(stats: *mut MibTcpStats, family: u32) -> u32;
+    }
+
+    pub fn retrans_segs() -> Option<u32> {
+        let mut stats = MibTcpStats { fields: [0; 15] };
+        let rc = unsafe { GetTcpStatisticsEx(&mut stats, AF_INET) };
+        (rc == 0).then(|| stats.fields[RETRANS_SEGS])
+    }
+}
+
+#[cfg(not(windows))]
+mod tcpstat {
+    pub fn retrans_segs() -> Option<u32> {
+        None
+    }
+}
+
+/// Retransmissions since `before`, or `None` where the counter is unavailable.
+///
+/// The counter is a 32-bit value that wraps, so the difference is taken with
+/// wrapping arithmetic rather than a subtraction that would panic or go
+/// negative on a machine that has been up long enough.
+fn retrans_delta(before: u32, now: u32) -> u64 {
+    now.wrapping_sub(before) as u64
+}
+
+fn retrans_since(before: Option<u32>) -> Option<u64> {
+    let before = before?;
+    Some(retrans_delta(before, tcpstat::retrans_segs()?))
 }
 
 /// Round down to a sector boundary.
@@ -151,9 +222,17 @@ pub struct TestOpts {
     pub size_mb: u64,
     #[serde(default = "default_threads")]
     pub threads: usize,
-    /// "read", "write" or "both".
+    /// "roundtrip", "read", "write" or "both".
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// Whether to ask for unbuffered I/O. Off measures the same path with every
+    /// cache in play, and the pair of figures is the diagnosis.
+    #[serde(default = "default_bypass")]
+    pub bypass_cache: bool,
+}
+
+fn default_bypass() -> bool {
+    true
 }
 
 fn default_size() -> u64 {
@@ -252,6 +331,10 @@ pub struct TargetResult {
     /// comparable, and without this the difference is invisible.
     pub read_file: Option<String>,
     pub read_file_bytes: u64,
+    /// TCP retransmissions during each phase. Thousands point at the wire or a
+    /// driver; none at all points at configuration.
+    pub read_retrans: Option<u64>,
+    pub write_retrans: Option<u64>,
     /// Local address the traffic actually left from, and its adapter.
     pub via_ip: Option<String>,
     pub via_adapter: Option<String>,
@@ -275,6 +358,8 @@ impl TargetResult {
             write_bytes: 0,
             read_file: None,
             read_file_bytes: 0,
+            read_retrans: None,
+            write_retrans: None,
             via_ip: None,
             host_name: None,
             via_adapter: None,
@@ -422,6 +507,16 @@ struct Measured {
     /// Set by the read path only: the file the figure came from.
     file: Option<String>,
     file_bytes: u64,
+    retrans: Option<u64>,
+}
+
+/// Keep both remarks when a measurement has two things to say about itself.
+fn merge_note(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (Some(a), None) => Some(a),
+        (None, b) => b,
+    }
 }
 
 fn mbps(m: &Measured) -> f64 {
@@ -440,6 +535,7 @@ fn measure_read(
     dir: &Path,
     size: u64,
     threads: usize,
+    bypass: bool,
     cancel: &Arc<AtomicBool>,
     progress: &Arc<Progress>,
 ) -> Result<Measured, String> {
@@ -488,6 +584,7 @@ fn measure_read(
 
     progress.begin(PHASE_READ, per_thread * threads as u64);
 
+    let retrans_before = tcpstat::retrans_segs();
     let started = Instant::now();
     let mut handles = Vec::with_capacity(threads);
 
@@ -498,7 +595,7 @@ fn measure_read(
         let offset = align_down(slice * i as u64);
 
         handles.push(std::thread::spawn(move || -> Result<(u64, bool), String> {
-            let (mut f, unbuffered) = open_read(&path).map_err(|e| e.to_string())?;
+            let (mut f, unbuffered) = open_read(&path, bypass).map_err(|e| e.to_string())?;
             f.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
 
             let mut buf = AlignedBuf::new(BLOCK);
@@ -524,27 +621,15 @@ fn measure_read(
         }));
     }
 
-    let mut bytes = 0u64;
-    let mut cached = false;
-    for h in handles {
-        let (n, unbuffered) = h.join().map_err(|_| "read thread panicked".to_string())??;
-        bytes += n;
-        if !unbuffered {
-            cached = true;
-        }
-    }
+    let mut out = collect(handles, started, "read", bypass, retrans_before)?;
 
-    if cached {
-        note = Some(CACHE_NOTE.to_string());
-    }
+    // Two things can be worth saying at once: that the file was too small, and
+    // that the cache could not be got out of the way.
+    out.note = merge_note(note, out.note);
+    out.file = Some(shown);
+    out.file_bytes = file_len;
 
-    Ok(Measured {
-        bytes,
-        seconds: started.elapsed().as_secs_f64(),
-        note,
-        file: Some(shown),
-        file_bytes: file_len,
-    })
+    Ok(out)
 }
 
 /// Volume per stream, trimmed to whole blocks as unbuffered I/O demands.
@@ -575,17 +660,21 @@ fn collect(
     handles: Vec<std::thread::JoinHandle<Result<(u64, bool), String>>>,
     started: Instant,
     what: &str,
+    wanted_bypass: bool,
+    retrans_before: Option<u32>,
 ) -> Result<Measured, String> {
     let mut bytes = 0u64;
-    let mut cached = false;
+    let mut refused = false;
     let mut failure: Option<String> = None;
 
     for handle in handles {
         match handle.join().map_err(|_| format!("{what} thread panicked"))? {
             Ok((n, unbuffered)) => {
                 bytes += n;
-                if !unbuffered {
-                    cached = true;
+                // Only a refusal is worth saying. Buffered because the operator
+                // asked for buffered is not a caveat, it is the test.
+                if wanted_bypass && !unbuffered {
+                    refused = true;
                 }
             }
             Err(e) => {
@@ -595,6 +684,7 @@ fn collect(
     }
 
     let seconds = started.elapsed().as_secs_f64();
+    let retrans = retrans_since(retrans_before);
 
     if let Some(e) = failure {
         return Err(e);
@@ -603,9 +693,10 @@ fn collect(
     Ok(Measured {
         bytes,
         seconds,
-        note: cached.then(|| CACHE_NOTE.to_string()),
+        note: refused.then(|| CACHE_NOTE.to_string()),
         file: None,
         file_bytes: 0,
+        retrans,
     })
 }
 
@@ -617,11 +708,13 @@ fn collect(
 fn write_streams(
     paths: &[PathBuf],
     per_thread: u64,
+    bypass: bool,
     cancel: &Arc<AtomicBool>,
     progress: &Arc<Progress>,
 ) -> Result<Measured, String> {
     progress.begin(PHASE_WRITE, per_thread * paths.len() as u64);
 
+    let retrans_before = tcpstat::retrans_segs();
     let started = Instant::now();
     let mut handles = Vec::with_capacity(paths.len());
 
@@ -631,7 +724,7 @@ fn write_streams(
         let progress = progress.clone();
 
         handles.push(std::thread::spawn(move || -> Result<(u64, bool), String> {
-            let (mut f, unbuffered) = create_write(&path).map_err(|e| e.to_string())?;
+            let (mut f, unbuffered) = create_write(&path, bypass).map_err(|e| e.to_string())?;
 
             // Incompressible: some arrays and some SMB setups compress in
             // flight, and a buffer of zeroes would measure the compressor.
@@ -655,18 +748,20 @@ fn write_streams(
         }));
     }
 
-    collect(handles, started, "write")
+    collect(handles, started, "write", bypass, retrans_before)
 }
 
 /// Read the given files back, one stream per file.
 fn read_streams(
     paths: &[PathBuf],
     per_thread: u64,
+    bypass: bool,
     cancel: &Arc<AtomicBool>,
     progress: &Arc<Progress>,
 ) -> Result<Measured, String> {
     progress.begin(PHASE_READ, per_thread * paths.len() as u64);
 
+    let retrans_before = tcpstat::retrans_segs();
     let started = Instant::now();
     let mut handles = Vec::with_capacity(paths.len());
 
@@ -676,7 +771,7 @@ fn read_streams(
         let progress = progress.clone();
 
         handles.push(std::thread::spawn(move || -> Result<(u64, bool), String> {
-            let (mut f, unbuffered) = open_read(&path).map_err(|e| e.to_string())?;
+            let (mut f, unbuffered) = open_read(&path, bypass).map_err(|e| e.to_string())?;
             let mut buf = AlignedBuf::new(BLOCK);
             let mut done: u64 = 0;
 
@@ -698,7 +793,7 @@ fn read_streams(
         }));
     }
 
-    collect(handles, started, "read")
+    collect(handles, started, "read", bypass, retrans_before)
 }
 
 /// Write `size` bytes as `threads` temporary files, then delete them.
@@ -706,12 +801,13 @@ fn measure_write(
     dir: &Path,
     size: u64,
     threads: usize,
+    bypass: bool,
     cancel: &Arc<AtomicBool>,
     progress: &Arc<Progress>,
 ) -> Result<Measured, String> {
     let threads = threads.max(1);
     let paths = tmp_paths(dir, threads);
-    let out = write_streams(&paths, per_stream(size, threads), cancel, progress);
+    let out = write_streams(&paths, per_stream(size, threads), bypass, cancel, progress);
     sweep(&paths);
     out
 }
@@ -734,6 +830,7 @@ fn measure_roundtrip(
     dir: &Path,
     size: u64,
     threads: usize,
+    bypass: bool,
     cancel: &Arc<AtomicBool>,
     progress: &Arc<Progress>,
 ) -> Result<(Measured, Measured), String> {
@@ -741,7 +838,7 @@ fn measure_roundtrip(
     let per_thread = per_stream(size, threads);
     let paths = tmp_paths(dir, threads);
 
-    let write = match write_streams(&paths, per_thread, cancel, progress) {
+    let write = match write_streams(&paths, per_thread, bypass, cancel, progress) {
         Ok(w) => w,
         Err(e) => {
             sweep(&paths);
@@ -749,7 +846,7 @@ fn measure_roundtrip(
         }
     };
 
-    let read = read_streams(&paths, per_thread, cancel, progress);
+    let read = read_streams(&paths, per_thread, bypass, cancel, progress);
     sweep(&paths);
 
     let mut read = read?;
@@ -788,18 +885,21 @@ pub fn run_target(
 
     let size = opts.size_mb.clamp(16, 16 * 1024) * 1024 * 1024;
     let threads = opts.threads.clamp(1, 32);
+    let bypass = opts.bypass_cache;
     // The round trip is its own thing: it writes and reads the same files, so
     // it cannot be assembled out of the other two.
     if opts.mode == "roundtrip" {
-        match measure_roundtrip(&dir, size, threads, cancel, progress) {
+        match measure_roundtrip(&dir, size, threads, bypass, cancel, progress) {
             Ok((write, read)) => {
                 out.write_mbps = Some(mbps(&write));
                 out.write_bytes = write.bytes;
+                out.write_retrans = write.retrans;
                 out.read_mbps = Some(mbps(&read));
                 out.read_bytes = read.bytes;
+                out.read_retrans = read.retrans;
                 out.read_file = read.file;
                 out.read_file_bytes = read.file_bytes;
-                out.note = read.note.or(write.note);
+                out.note = merge_note(read.note, write.note);
             }
             Err(e) => out.error = Some(e),
         }
@@ -810,10 +910,11 @@ pub fn run_target(
     let wants_write = opts.mode == "write" || opts.mode == "both";
 
     if wants_read {
-        match measure_read(&dir, size, threads, cancel, progress) {
+        match measure_read(&dir, size, threads, bypass, cancel, progress) {
             Ok(m) => {
                 out.read_mbps = Some(mbps(&m));
                 out.read_bytes = m.bytes;
+                out.read_retrans = m.retrans;
                 out.note = m.note;
                 out.read_file = m.file;
                 out.read_file_bytes = m.file_bytes;
@@ -823,10 +924,11 @@ pub fn run_target(
     }
 
     if wants_write && !cancel.load(Ordering::Relaxed) {
-        match measure_write(&dir, size, threads, cancel, progress) {
+        match measure_write(&dir, size, threads, bypass, cancel, progress) {
             Ok(m) => {
                 out.write_mbps = Some(mbps(&m));
                 out.write_bytes = m.bytes;
+                out.write_retrans = m.retrans;
             }
             Err(e) => {
                 let msg = format!("write: {e}");
@@ -909,7 +1011,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let size = 32 * 1024 * 1024;
 
-        let written = measure_write(&dir, size, 2, &cancel, &prog()).expect("write should succeed");
+        let written = measure_write(&dir, size, 2, true, &cancel, &prog()).expect("write should succeed");
         assert!(written.bytes >= size, "all requested bytes should be written");
         assert!(mbps(&written) > 0.0);
 
@@ -917,7 +1019,7 @@ mod tests {
         let payload = vec![7u8; (size + 8 * 1024 * 1024) as usize];
         fs::write(dir.join("payload.bin"), &payload).unwrap();
 
-        let read = measure_read(&dir, size, 2, &cancel, &prog()).expect("read should succeed");
+        let read = measure_read(&dir, size, 2, true, &cancel, &prog()).expect("read should succeed");
         assert!(read.bytes > 0);
 
         fs::remove_dir_all(&dir).ok();
@@ -929,7 +1031,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        measure_write(&dir, 16 * 1024 * 1024, 2, &cancel, &prog()).unwrap();
+        measure_write(&dir, 16 * 1024 * 1024, 2, true, &cancel, &prog()).unwrap();
 
         let leftovers: Vec<_> = fs::read_dir(&dir)
             .unwrap()
@@ -957,7 +1059,7 @@ mod tests {
         assert_eq!(found.0.file_name().unwrap(), "clip.mov");
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let m = measure_read(&root, 16 * 1024 * 1024, 2, &cancel, &prog()).expect("read should work");
+        let m = measure_read(&root, 16 * 1024 * 1024, 2, true, &cancel, &prog()).expect("read should work");
         assert!(m.bytes > 0);
 
         // Which file carried the figure, and where it was: two servers measured
@@ -981,7 +1083,7 @@ mod tests {
 
         let cancel = Arc::new(AtomicBool::new(false));
         let size = 16 * 1024 * 1024;
-        let (write, read) = measure_roundtrip(&dir, size, 2, &cancel, &prog()).expect("round trip should work");
+        let (write, read) = measure_roundtrip(&dir, size, 2, true, &cancel, &prog()).expect("round trip should work");
 
         // Read back exactly what was written — not a byte less, which is the
         // whole point of reading the file this test just created.
@@ -1002,6 +1104,45 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// Buffered is a choice, not a failure. Saying "the cache could not be
+    /// bypassed" when nobody asked it to be would turn the diagnostic pair of
+    /// readings into two readings that both look suspect.
+    #[test]
+    fn buffered_run_is_not_reported_as_a_failed_bypass() {
+        let dir = std::env::temp_dir().join("reticle-netspeed-buffered");
+        fs::create_dir_all(&dir).unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (write, read) =
+            measure_roundtrip(&dir, 16 * 1024 * 1024, 2, false, &cancel, &prog()).expect("buffered round trip should work");
+
+        assert_eq!(write.note, None, "buffered write should carry no caveat");
+        assert_eq!(read.note, None, "buffered read should carry no caveat");
+        assert!(write.bytes > 0 && read.bytes == write.bytes);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The counter has to actually be readable, or the column would quietly be
+    /// empty on every row and look like "no retransmissions".
+    #[cfg(windows)]
+    #[test]
+    fn reads_the_machines_retransmission_counter() {
+        let now = tcpstat::retrans_segs().expect("Windows should expose TCP statistics");
+        let again = retrans_since(Some(now)).expect("a second reading should work too");
+        assert!(again < 100_000, "implausible delta over no time at all: {again}");
+    }
+
+    /// The retransmission counter is 32 bits and wraps on a long-running
+    /// machine. Subtracting across the wrap must give the real delta, not a
+    /// panic in debug or four billion in release.
+    #[test]
+    fn retransmissions_survive_the_counter_wrapping() {
+        assert_eq!(retrans_delta(100, 140), 40);
+        assert_eq!(retrans_delta(u32::MAX - 3, 6), 10);
+        assert_eq!(retrans_delta(500, 500), 0);
+    }
+
     /// A failed write must not leave its files in the target folder either.
     #[test]
     fn round_trip_sweeps_after_a_failure() {
@@ -1009,7 +1150,7 @@ mod tests {
         fs::remove_dir_all(&missing).ok();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let err = measure_roundtrip(&missing, 16 * 1024 * 1024, 2, &cancel, &prog()).unwrap_err();
+        let err = measure_roundtrip(&missing, 16 * 1024 * 1024, 2, true, &cancel, &prog()).unwrap_err();
         assert!(!err.is_empty());
         assert!(!missing.exists(), "a failed run should not create the folder");
     }
@@ -1024,7 +1165,7 @@ mod tests {
 
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = prog();
-        let m = measure_read(&root, 16 * 1024 * 1024, 2, &cancel, &progress).expect("read should work");
+        let m = measure_read(&root, 16 * 1024 * 1024, 2, true, &cancel, &progress).expect("read should work");
 
         let snap = progress.snapshot();
         assert_eq!(snap.phase, "read");
@@ -1048,7 +1189,7 @@ mod tests {
         fs::write(dir.join("tiny.bin"), vec![1u8; 1024]).unwrap();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let err = measure_read(&dir, 512 * 1024 * 1024, 4, &cancel, &prog()).unwrap_err();
+        let err = measure_read(&dir, 512 * 1024 * 1024, 4, true, &cancel, &prog()).unwrap_err();
 
         assert!(err.contains("MB"), "message should state the size found: {err}");
         assert!(err.contains("streams"), "message should hint at a fix: {err}");
@@ -1062,7 +1203,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let err = measure_read(&dir, 32 * 1024 * 1024, 2, &cancel, &prog()).unwrap_err();
+        let err = measure_read(&dir, 32 * 1024 * 1024, 2, true, &cancel, &prog()).unwrap_err();
         assert!(err.contains("no files"), "got: {err}");
 
         fs::remove_dir_all(&dir).ok();
