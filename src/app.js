@@ -64,6 +64,52 @@ const I18N = {
     universes: 'Universes',
     tabDmx: 'DMX',
     tabHttp: 'HTTP',
+    tabNet: 'Network',
+    netSize: 'Size',
+    netThreads: 'Streams',
+    netMode: 'Mode',
+    netModeRead: 'Read',
+    netModeWrite: 'Write',
+    netModeBoth: 'Read + write',
+    netRun: 'Run',
+    netStop: 'Stop',
+    netAdd: '+ target',
+    netTarget: 'target',
+    netLatency: 'latency',
+    netRead: 'read',
+    netWrite: 'write',
+    netExport: 'Export report',
+    netReportTitle: 'RETICLE — NETWORK REPORT',
+    netReportNothing: 'run a test first',
+    netReportSummary: (n, lo, hi, spread) => `${n} targets · ${lo}–${hi} MB/s · spread x${spread}`,
+    netLink: 'Link',
+    netOfLink: (label) => `% of ${label}`,
+    netStatus: 'status',
+    netEmptyTitle: 'No targets yet.',
+    netWriteWarning: 'Write mode creates temporary files in each folder and deletes them afterwards.',
+    netPathHint: '\\\\192.168.2.11\\share\\folder',
+    netBrowse: 'Browse',
+    netRemove: 'Remove target',
+    netRange: 'Add a range',
+    netAddRange: 'Add',
+    netRangeAdded: (n) => `added ${n}`,
+    netRangeSkipped: (added, dupes) => `added ${added}, ${dupes} already in the list`,
+    netRangeBadIp: 'both ends must be IPv4 addresses',
+    netRangeDifferentSubnet: 'both ends must share the first three octets',
+    netRangeBackwards: 'the first address must come before the last',
+    netRangeTooMany: (n) => `that is ${n} targets — keep it under 128`,
+    netRangeNeedPath: 'add the share path too',
+    netExpect: 'Expect',
+    netAnyAdapter: 'any adapter',
+    netVia: 'via',
+    netWrongAdapter: (name) => `went via ${name}, not the one you expected`,
+    netQueued: 'queued',
+    netMeasuring: 'measuring…',
+    netDone: (n) => `${n} measured`,
+    netCancelled: 'stopped',
+    netOneStream: 'one stream measures a single stream, not the link',
+    mbps: (n) => `${Math.round(n)} MB/s`,
+    ms: (n) => `${n.toFixed(1)} ms`,
     dmxEmptyTitle: 'No sACN universes seen yet.',
     dmxQuickStart: 'Listen to sACN universes 1–4',
     uniShort: (n) => `U${n}`,
@@ -445,7 +491,7 @@ function renderDetail() {
   const box = $('detailSlots');
   box.textContent = '';
 
-  row.slots.forEach((slot, i) => {
+  row.slots.forEach((_, i) => {
     const card = document.createElement('div');
     card.className = 'detail-slot';
 
@@ -521,7 +567,7 @@ function refreshDetailValues(sparkData) {
   if (!row || $('detail').hidden) return;
 
   const cards = $('detailSlots').children;
-  row.slots.forEach((slot, i) => {
+  row.slots.forEach((_, i) => {
     const card = cards[i];
     if (!card) return;
 
@@ -953,6 +999,492 @@ setInterval(async () => {
 $('dmxQuickStart').onclick = () =>
   addSource({ kind: 'sacn', bind: '0.0.0.0', port: 5568, multicast: null, universes: '1-4', label: null });
 
+/* ---------- network throughput ----------
+ * Measures shares the way a copy tool would use them, rather than raw
+ * bandwidth: the overhead of the file protocol is part of what people actually
+ * get, and this needs nothing installed on the far side.
+ */
+
+const NET_KEY = 'reticle-net-targets';
+const NET_LINK_KEY = 'reticle-net-link';
+
+/** Usable megabytes per second per gigabit of link.
+ *
+ *  Not the arithmetic 125: Ethernet, IP and TCP headers eat a few percent, so
+ *  a healthy 10 GbE path delivers around 1175 MB/s rather than 1250. Measuring
+ *  against the arithmetic figure would make every perfect link look broken. */
+const MBPS_PER_GBIT = 117.5;
+/** Below this share of the best result, a row is worth looking at. */
+const SLOW_RATIO = 0.7;
+
+let netTargets = [];
+let netNextId = 1;
+let netBusy = false;
+const netRows = new Map();      // id -> { tr, cells }
+const netResults = new Map();   // id -> last result
+
+function loadNetTargets() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(NET_KEY) || '[]');
+    return Array.isArray(raw) ? raw.filter((t) => t && typeof t.path === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveNetTargets() {
+  localStorage.setItem(NET_KEY, JSON.stringify(netTargets.map(({ id, path }) => ({ id, path }))));
+}
+
+function addNetTarget(path = '') {
+  netTargets.push({ id: netNextId++, path });
+  saveNetTargets();
+  renderNetTable();
+}
+
+function removeNetTarget(id) {
+  netTargets = netTargets.filter((t) => t.id !== id);
+  netResults.delete(id);
+  const row = netRows.get(id);
+  if (row) { row.tr.remove(); netRows.delete(id); }
+  saveNetTargets();
+  renderNetTable();
+}
+
+/* ---------- adding a range of hosts ----------
+ * Nine servers differing by one octet is the normal case on a show network,
+ * and typing nine almost identical UNC paths by hand invites a typo that then
+ * looks like a dead host.
+ */
+
+/** Most targets a single range may add. Past this it is a mistake, not a plan. */
+const RANGE_LIMIT = 128;
+
+function parseIp(text) {
+  const parts = text.trim().split('.');
+  if (parts.length !== 4) return null;
+  const nums = parts.map((p) => (/^\d{1,3}$/.test(p) ? Number(p) : -1));
+  return nums.every((n) => n >= 0 && n <= 255) ? nums : null;
+}
+
+function addNetRange() {
+  const note = $('netRangeNote');
+  const from = parseIp($('netFrom').value);
+  const to = parseIp($('netTo').value);
+  const share = $('netSharePath').value.trim().replace(/^[\\/]+/, '');
+
+  const fail = (msg) => { note.textContent = msg; note.classList.add('bad'); };
+  note.classList.remove('bad');
+
+  if (!from || !to) return fail(t('netRangeBadIp'));
+  if (from.slice(0, 3).join('.') !== to.slice(0, 3).join('.')) return fail(t('netRangeDifferentSubnet'));
+  if (from[3] > to[3]) return fail(t('netRangeBackwards'));
+  if (!share) return fail(t('netRangeNeedPath'));
+
+  const count = to[3] - from[3] + 1;
+  if (count > RANGE_LIMIT) return fail(t('netRangeTooMany', count));
+
+  const prefix = from.slice(0, 3).join('.');
+  const existing = new Set(netTargets.map((x) => x.path.toLowerCase()));
+  let added = 0;
+  let dupes = 0;
+
+  for (let last = from[3]; last <= to[3]; last++) {
+    const path = `\\\\${prefix}.${last}\\${share}`;
+    if (existing.has(path.toLowerCase())) { dupes++; continue; }
+    existing.add(path.toLowerCase());
+    netTargets.push({ id: netNextId++, path });
+    added++;
+  }
+
+  saveNetTargets();
+  renderNetTable();
+  note.textContent = dupes ? t('netRangeSkipped', added, dupes) : t('netRangeAdded', added);
+}
+
+/** Ceiling of the link currently selected, in MB/s. */
+function linkCeiling() {
+  return Number($('netLink').value || 10) * MBPS_PER_GBIT;
+}
+
+function fmtOfLink(mbps) {
+  if (!mbps) return '—';
+  return `${Math.round((mbps / linkCeiling()) * 100)}%`;
+}
+
+/** Re-label the column and recompute the percentages already on screen, so
+ *  switching link speed does not require running the test again. */
+function applyLinkChoice() {
+  const sel = $('netLink');
+  const label = sel.options[sel.selectedIndex].textContent;
+  $('netLinkHead').textContent = t('netOfLink', label);
+  localStorage.setItem(NET_LINK_KEY, sel.value);
+
+  for (const [id, result] of netResults) {
+    const entry = netRows.get(id);
+    if (!entry) continue;
+    entry.cells.link.textContent = fmtOfLink(result.read_mbps || result.write_mbps);
+  }
+}
+
+function netRowFor(target) {
+  let entry = netRows.get(target.id);
+  if (entry) return entry;
+
+  const tr = document.createElement('tr');
+  const cells = {};
+
+  const pathTd = document.createElement('td');
+  pathTd.className = 'path';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = t('netPathHint');
+  input.value = target.path;
+  input.spellcheck = false;
+  input.onchange = () => {
+    target.path = input.value.trim();
+    saveNetTargets();
+  };
+  pathTd.appendChild(input);
+  cells.input = input;
+
+  for (const name of ['latency', 'read', 'write', 'link', 'via']) {
+    const td = document.createElement('td');
+    td.className = `num ${name}`;
+    td.textContent = '—';
+    cells[name] = td;
+  }
+
+  const status = document.createElement('td');
+  status.className = 'status';
+  cells.status = status;
+
+  const acts = document.createElement('td');
+  acts.className = 'net-acts-cell';
+  const wrap = document.createElement('div');
+  wrap.className = 'net-acts';
+
+  const browse = document.createElement('button');
+  browse.type = 'button';
+  browse.className = 'preset-btn';
+  browse.textContent = '…';
+  browse.title = t('netBrowse');
+  browse.onclick = async () => {
+    const picked = await invoke('pick_folder');
+    if (!picked) return;
+    input.value = picked;
+    target.path = picked;
+    saveNetTargets();
+  };
+
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'preset-btn is-danger';
+  del.textContent = '×';
+  del.title = t('netRemove');
+  del.onclick = () => removeNetTarget(target.id);
+
+  wrap.append(browse, del);
+  acts.appendChild(wrap);
+
+  cells.via.className = 'via';   // left-aligned: it is a name, not a number
+
+  tr.append(pathTd, cells.latency, cells.read, cells.write, cells.link, cells.via, status, acts);
+  entry = { tr, cells };
+  netRows.set(target.id, entry);
+  return entry;
+}
+
+function renderNetTable() {
+  const body = $('netBody');
+
+  for (const target of netTargets) {
+    const entry = netRowFor(target);
+    body.appendChild(entry.tr);        // appendChild moves, so order follows the list
+  }
+
+  // Highlight whoever lags behind the best result of this run: the point is
+  // not an absolute number, it is which target is the odd one out.
+  const best = Math.max(0, ...[...netResults.values()].map((r) => r.read_mbps || 0));
+
+  for (const [id, result] of netResults) {
+    const entry = netRows.get(id);
+    if (!entry) continue;
+    const slow = best > 0 && result.read_mbps && result.read_mbps < best * SLOW_RATIO;
+    entry.cells.read.classList.toggle('slow', !!slow);
+  }
+
+  $('netEmpty').hidden = netTargets.length > 0;
+}
+
+function applyNetResult(result) {
+  netResults.set(result.id, result);
+  const entry = netRows.get(result.id);
+  if (!entry) return;
+
+  const c = entry.cells;
+  entry.tr.classList.remove('is-running');
+
+  c.latency.textContent = result.latency_ms === null || result.latency_ms === undefined
+    ? '—' : t('ms', result.latency_ms);
+  c.read.textContent = result.read_mbps ? t('mbps', result.read_mbps) : '—';
+  c.write.textContent = result.write_mbps ? t('mbps', result.write_mbps) : '—';
+  c.link.textContent = fmtOfLink(result.read_mbps || result.write_mbps);
+
+  // Which adapter the traffic really left from. On a machine with a 10 GbE
+  // card beside a gigabit dongle this is the difference between a real
+  // measurement and a misleading one.
+  const via = result.via_adapter || result.via_ip;
+  c.via.textContent = via || '—';
+  c.via.title = result.via_ip || '';
+
+  const expected = $('netVia').value;
+  const wrongAdapter = expected && result.via_ip && result.via_ip !== expected;
+  c.via.classList.toggle('slow', !!wrongAdapter);
+
+  const trouble = result.error || (wrongAdapter ? t('netWrongAdapter', via) : null);
+  c.status.classList.toggle('bad', !!trouble);
+  c.status.textContent = trouble || result.note || '';
+
+  renderNetTable();
+}
+
+/* ---------- report image ----------
+ * Drawn by hand onto a canvas rather than screenshotted or sent through a
+ * library: the output stays predictable, carries the test parameters that a
+ * screenshot of the table would lose, and the app keeps no extra dependency.
+ */
+
+/** Trim a path from the left: the tail (host and folder) is what identifies it. */
+function trimLeft(ctx, text, maxWidth) {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let cut = text;
+  while (cut.length > 4 && ctx.measureText(`…${cut}`).width > maxWidth) {
+    cut = cut.slice(1);
+  }
+  return `…${cut}`;
+}
+
+function drawReport() {
+  const rowsData = netTargets
+    .map((x) => ({ target: x, result: netResults.get(x.id) }))
+    .filter((r) => r.result);
+
+  if (!rowsData.length) return null;
+
+  const style = getComputedStyle(document.documentElement);
+  const colour = {
+    bg: style.getPropertyValue('--paper').trim(),
+    ink: style.getPropertyValue('--ink').trim(),
+    dim: style.getPropertyValue('--dim').trim(),
+    line: style.getPropertyValue('--line2').trim(),
+    accent: style.getPropertyValue('--accent').trim(),
+    bad: style.getPropertyValue('--danger').trim(),
+  };
+
+  const scale = 2;                    // drawn at 2x so the text stays crisp
+  const pad = 28;
+  const rowH = 30;
+  const headH = 108;
+  const footH = 52;
+  const cols = { target: pad, latency: 760, read: 880, write: 1010, pct: 1130, via: 1215 };
+  const width = 1520;
+  const height = headH + rowsData.length * rowH + footH;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = colour.bg;
+  ctx.fillRect(0, 0, width, height);
+
+  const mono = (size, weight = 400) => `${weight} ${size}px Consolas, "DM Mono", monospace`;
+  const sans = (size, weight = 400) => `${weight} ${size}px "Segoe UI", sans-serif`;
+
+  ctx.fillStyle = colour.ink;
+  ctx.font = sans(17, 700);
+  ctx.fillText(t('netReportTitle'), pad, 38);
+
+  // Parameters belong in the file: a number without its test settings is
+  // not a measurement, it is a rumour.
+  const sel = $('netLink');
+  const when = new Date().toLocaleString([], { hour12: false });
+  const params = [
+    when,
+    `${$('netSize').value} MB`,
+    `${$('netThreads').value} streams`,
+    $('netMode').options[$('netMode').selectedIndex].textContent.toLowerCase(),
+    sel.options[sel.selectedIndex].textContent,
+  ].join('  ·  ');
+
+  ctx.fillStyle = colour.dim;
+  ctx.font = sans(12);
+  ctx.fillText(params, pad, 60);
+
+  ctx.strokeStyle = colour.line;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad, 78.5);
+  ctx.lineTo(width - pad, 78.5);
+  ctx.stroke();
+
+  ctx.font = sans(11, 500);
+  ctx.fillStyle = colour.dim;
+  ctx.fillText('TARGET', cols.target, 97);
+  ctx.fillText('LATENCY', cols.latency, 97);
+  ctx.fillText('READ', cols.read, 97);
+  ctx.fillText('WRITE', cols.write, 97);
+  ctx.fillText('% OF LINK', cols.pct, 97);
+  ctx.fillText('VIA', cols.via, 97);
+
+  const best = Math.max(...rowsData.map((r) => r.result.read_mbps || 0));
+
+  rowsData.forEach(({ target, result }, i) => {
+    const y = headH + i * rowH + 20;
+
+    ctx.strokeStyle = colour.line;
+    ctx.beginPath();
+    ctx.moveTo(pad, y + 9.5);
+    ctx.lineTo(width - pad, y + 9.5);
+    ctx.stroke();
+
+    ctx.font = mono(13);
+    ctx.fillStyle = colour.ink;
+    ctx.fillText(trimLeft(ctx, target.path, cols.latency - pad - 24), cols.target, y);
+
+    ctx.fillStyle = colour.dim;
+    ctx.fillText(result.latency_ms ? t('ms', result.latency_ms) : '—', cols.latency, y);
+
+    const slow = best > 0 && result.read_mbps && result.read_mbps < best * SLOW_RATIO;
+    ctx.fillStyle = slow ? colour.bad : colour.ink;
+    ctx.font = mono(13, 700);
+    ctx.fillText(result.read_mbps ? Math.round(result.read_mbps) : '—', cols.read, y);
+    ctx.fillText(result.write_mbps ? Math.round(result.write_mbps) : '—', cols.write, y);
+
+    ctx.font = mono(13);
+    ctx.fillStyle = colour.dim;
+    ctx.fillText(fmtOfLink(result.read_mbps || result.write_mbps), cols.pct, y);
+    ctx.fillText(result.via_adapter || result.via_ip || '—', cols.via, y);
+
+    if (result.error) {
+      ctx.fillStyle = colour.bad;
+      ctx.font = sans(11);
+      ctx.fillText(result.error.slice(0, 90), cols.target, y + 13);
+    }
+  });
+
+  const speeds = rowsData.map((r) => r.result.read_mbps || r.result.write_mbps).filter(Boolean);
+  if (speeds.length) {
+    const lo = Math.round(Math.min(...speeds));
+    const hi = Math.round(Math.max(...speeds));
+    ctx.fillStyle = colour.accent;
+    ctx.font = sans(12, 500);
+    ctx.fillText(
+      t('netReportSummary', rowsData.length, lo, hi, (hi / lo).toFixed(1)),
+      pad,
+      height - 20,
+    );
+  }
+
+  return canvas;
+}
+
+async function exportNetReport() {
+  const canvas = drawReport();
+  if (!canvas) {
+    $('netNote').textContent = t('netReportNothing');
+    return;
+  }
+
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  const data = canvas.toDataURL('image/png').split(',')[1];
+
+  try {
+    const path = await invoke('save_binary', {
+      dataBase64: data,
+      defaultName: `reticle-network-${stamp}.png`,
+      extension: 'png',
+    });
+    if (path) $('netNote').textContent = t('savedTo', path);
+  } catch (e) {
+    $('netNote').textContent = String(e);
+  }
+}
+
+async function runNetTest() {
+  const targets = netTargets.filter((x) => x.path);
+  if (!targets.length || netBusy) return;
+
+  netBusy = true;
+  $('netRun').disabled = true;
+  $('netStop').disabled = false;
+
+  for (const target of targets) {
+    const entry = netRows.get(target.id);
+    if (entry) {
+      entry.cells.status.textContent = t('netQueued');
+      entry.cells.status.classList.remove('bad');
+    }
+  }
+
+  const opts = {
+    size_mb: Number($('netSize').value),
+    threads: Number($('netThreads').value),
+    mode: $('netMode').value,
+  };
+
+  try {
+    await invoke('net_test', { targets: targets.map(({ id, path }) => ({ id, path })), opts });
+  } catch (e) {
+    $('netNote').textContent = String(e);
+    netBusy = false;
+    $('netRun').disabled = false;
+    $('netStop').disabled = true;
+  }
+}
+
+listen('nettest-start', (e) => {
+  const entry = netRows.get(e.payload);
+  if (!entry) return;
+  entry.tr.classList.add('is-running');
+  entry.cells.status.textContent = t('netMeasuring');
+});
+
+listen('nettest-result', (e) => applyNetResult(e.payload));
+
+listen('nettest-done', (e) => {
+  netBusy = false;
+  $('netRun').disabled = false;
+  $('netStop').disabled = true;
+  $('netNote').textContent = e.payload ? t('netCancelled') : t('netDone', netResults.size);
+});
+
+$('netRun').onclick = runNetTest;
+$('netStop').onclick = () => invoke('net_test_cancel');
+$('netAdd').onclick = () => addNetTarget();
+$('netAddFirst').onclick = () => addNetTarget();
+$('netAddRange').onclick = addNetRange;
+$('netExport').onclick = exportNetReport;
+
+// Enter in any of the range fields adds the range — it is a form in spirit.
+for (const id of ['netFrom', 'netTo', 'netSharePath']) {
+  $(id).onkeydown = (e) => { if (e.key === 'Enter') addNetRange(); };
+}
+
+// One stream measures one stream: on a 10 GbE link that ceiling sits near
+// 500 MB/s and looks exactly like a slow network. Worth saying out loud.
+$('netThreads').onchange = () => {
+  $('netNote').textContent = Number($('netThreads').value) === 1 ? t('netOneStream') : '';
+};
+
+$('netMode').onchange = () => {
+  $('netWarn').hidden = $('netMode').value === 'read';
+};
+
+$('netLink').onchange = applyLinkChoice;
+
 /* ---------- interface size ---------- */
 
 // The value is already applied by the inline script in <head>; here we only
@@ -1087,6 +1619,28 @@ function rememberUrl(url) {
 
 let interfaces = [];
 
+/** Fill the "expect this adapter" picker. 0.0.0.0 is not an adapter, so it is
+ *  left out: here the question is which card the traffic really used. */
+function fillViaPicker() {
+  const sel = $('netVia');
+  const keep = sel.value;
+  sel.textContent = '';
+
+  const any = document.createElement('option');
+  any.value = '';
+  any.textContent = t('netAnyAdapter');
+  sel.appendChild(any);
+
+  for (const iface of interfaces.filter((i) => i.ip !== '0.0.0.0')) {
+    const opt = document.createElement('option');
+    opt.value = iface.ip;
+    opt.textContent = `${iface.name} · ${iface.ip}`;
+    sel.appendChild(opt);
+  }
+
+  sel.value = keep;
+}
+
 async function loadInterfaces() {
   try {
     interfaces = await invoke('list_interfaces');
@@ -1098,6 +1652,7 @@ async function loadInterfaces() {
       { ip: '127.0.0.1', name: 'localhost' },
     ];
   }
+  fillViaPicker();
 }
 
 /* ---------- request history ---------- */
@@ -1561,8 +2116,14 @@ $('hUrl').onblur = () => {
 attachCombo($('fBind'), () => interfaces.map((i) => ({ value: i.ip, label: i.name })));
 attachCombo($('hUrl'), () => loadUrls().map((u) => ({ value: u })));
 
+netTargets = loadNetTargets();
+netNextId = netTargets.length ? Math.max(...netTargets.map((x) => x.id)) + 1 : 1;
+$('netLink').value = localStorage.getItem(NET_LINK_KEY) || '10';
+applyLinkChoice();
+
 applyStaticStrings();
 renderPresets();
 renderHistory();
+renderNetTable();
 loadInterfaces();
 refreshSources();

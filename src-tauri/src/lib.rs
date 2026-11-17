@@ -13,6 +13,7 @@
 
 mod dmx;
 mod http;
+mod netspeed;
 mod osc;
 mod raw;
 mod sacn;
@@ -21,7 +22,8 @@ mod sources;
 mod stats;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -61,6 +63,11 @@ pub struct AppState {
     inner: Mutex<Inner>,
     tx: mpsc::Sender<Parsed>,
     start: Instant,
+    /// Set to stop a throughput run between blocks; the run clears it on start.
+    net_cancel: Arc<AtomicBool>,
+    /// Guards against a second run: two tests at once would share one uplink
+    /// and both sets of numbers would be meaningless.
+    net_running: Arc<AtomicBool>,
 }
 
 #[derive(Serialize, Clone)]
@@ -258,6 +265,43 @@ async fn save_text(
     Ok(Some(path.display().to_string()))
 }
 
+/// Save binary data — a rendered report — through the system dialog.
+///
+/// The payload arrives base64-encoded because that survives the JSON bridge
+/// intact; a byte array would cross as a few hundred thousand JSON numbers.
+#[tauri::command]
+async fn save_binary(
+    app: tauri::AppHandle,
+    data_base64: String,
+    default_name: String,
+    extension: String,
+) -> Result<Option<String>, String> {
+    use base64::Engine;
+    use tauri_plugin_dialog::DialogExt;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|e| format!("bad image data: {e}"))?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter(extension.to_uppercase(), &[extension.as_str()])
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+
+    Ok(Some(path.display().to_string()))
+}
+
 /// Read a text file chosen in the system dialog.
 ///
 /// Symmetric to `save_text`: only what the user pointed at is read. `None`
@@ -287,6 +331,66 @@ async fn open_text(
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
 
     Ok(Some(text))
+}
+
+/// Pick a folder through the system dialog, for filling in a share by hand.
+#[tauri::command]
+async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+
+    Ok(Some(path.into_path().map_err(|e| e.to_string())?.display().to_string()))
+}
+
+/// Run a throughput test across the given shares.
+///
+/// Targets are measured one after another on purpose: nine servers tested
+/// simultaneously would share a single uplink, and every reading would be wrong.
+/// Results arrive as events so the table fills in as the run progresses.
+#[tauri::command]
+async fn net_test(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    targets: Vec<netspeed::Target>,
+    opts: netspeed::TestOpts,
+) -> Result<(), String> {
+    if state.net_running.swap(true, Ordering::SeqCst) {
+        return Err("a test is already running".to_string());
+    }
+
+    let cancel = state.net_cancel.clone();
+    let running = state.net_running.clone();
+    cancel.store(false, Ordering::SeqCst);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        for target in targets {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let _ = app.emit("nettest-start", target.id);
+            let result = netspeed::run_target(&target, &opts, &cancel);
+            let _ = app.emit("nettest-result", result);
+        }
+
+        running.store(false, Ordering::SeqCst);
+        let _ = app.emit("nettest-done", cancel.load(Ordering::Relaxed));
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn net_test_cancel(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.net_cancel.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 /// HTTP requests leave from Rust, bypassing the webview: hence no CORS, and any
@@ -391,6 +495,8 @@ pub fn run() {
             paused: false,
         }),
         tx,
+        net_cancel: Arc::new(AtomicBool::new(false)),
+        net_running: Arc::new(AtomicBool::new(false)),
         start: Instant::now(),
     };
 
@@ -416,7 +522,11 @@ pub fn run() {
             list_interfaces,
             save_text,
             open_text,
-            http_request
+            save_binary,
+            http_request,
+            pick_folder,
+            net_test,
+            net_test_cancel
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

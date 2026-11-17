@@ -4,8 +4,9 @@ A protocol monitor for AV work. Listens on several ports at once and shows not
 just the stream of messages, but **statistics per address** — min, max, average,
 rate, jitter and how long an address has been silent.
 
-Supports OSC, sACN (E1.31) with a DMX channel grid, raw UDP for diagnostics, and
-an HTTP client for poking REST endpoints.
+Supports OSC, sACN (E1.31) with a DMX channel grid, raw UDP for diagnostics, an
+HTTP client for poking REST endpoints, and throughput testing across file
+shares.
 
 ## Download
 
@@ -103,6 +104,45 @@ as an array, and they would be unreadable in an address table. Sockets, channel
 and ticker are shared with OSC. The UI pulls the channel frame itself, and only
 for the universe currently open.
 
+## Network throughput
+
+Answers a question a protocol monitor normally cannot: *is every one of these
+servers actually getting the link it should?*
+
+Targets are file shares, added one by one or as a range — give the first and
+last address plus the share path, and all the hosts in between appear at once.
+Each row reports read speed, write speed, latency, the share of the selected
+link speed, and **which local adapter the traffic actually left from**.
+
+Deliberate choices:
+
+- **Several streams by default.** A single SMB stream tops out near 400–600 MB/s
+  on a 10 GbE link — it runs out of one CPU core and round-trip latency long
+  before it runs out of wire. Measuring single-threaded reports that ceiling as
+  if it were the network. Comparing 1 stream against 8 tells the two apart.
+- **One target at a time.** Nine servers measured simultaneously would share one
+  uplink and every number would be wrong.
+- **SMB, not raw bandwidth.** Copy tools move data over SMB, and the protocol's
+  overhead is part of what you actually get — plus this needs nothing installed
+  on the far side, unlike iperf3.
+- **Link speed is selectable** (1 … 100 GbE), and the percentages recompute
+  without re-running the test.
+
+Write mode creates temporary files in the target folder and removes them
+afterwards, including when a run fails. The data written is incompressible, so
+an array or link that compresses in flight cannot flatter the result.
+
+**Export report** renders the table to PNG, carrying the test parameters —
+size, streams, mode, link, timestamp — because a throughput figure without the
+conditions that produced it is not a measurement.
+
+Which adapter was used is detected by connecting a UDP socket to the target and
+reading back the source address the kernel chose: no packet is sent, but the
+routing decision is the same one SMB will make. An application cannot *choose*
+the adapter — Windows decides by routing metric — but it can tell you when the
+wrong one was used, which on a machine with a 10 GbE card beside a gigabit
+dongle is an easy and invisible mistake.
+
 ## HTTP
 
 GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS with arbitrary headers and
@@ -192,6 +232,7 @@ new source types and inherit all statistics for free.
 | `src-tauri/src/sources.rs` | Source pool: sockets, multicast, counters |
 | `src-tauri/src/stats.rs` | Aggregator: min/max/avg/rate/jitter, sparklines |
 | `src-tauri/src/http.rs` | HTTP client |
+| `src-tauri/src/netspeed.rs` | Share throughput: multi-stream read/write, route lookup |
 | `src-tauri/src/lib.rs` | State, commands, 30 Hz ticker |
 | `src/` | Interface. Design layer (`_tokens.css`, `_components.css`) comes from stranyov.pro/tools |
 

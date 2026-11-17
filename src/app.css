@@ -438,6 +438,101 @@ tr.is-silent td.silence { color: var(--danger); }
 .ch-mm { display: block; font-size: 0.75em; color: var(--dim); }
 .ch.is-dark .ch-v { color: var(--dim); }
 
+/* ---- network throughput ---- */
+/* The table scrolls inside its own wrapper; left to fill the view directly it
+   would stretch to full height and smear the rows apart.
+   Flex rather than grid on purpose: the write warning hides itself, and a
+   hidden child drops out of a grid's row count and shifts everything. */
+#view-net.is-active { display: flex; flex-direction: column; overflow: hidden; }
+.net-wrap { flex: 1; min-height: 0; overflow: auto; position: relative; }
+
+.net-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.net-range-label {
+  font-size: var(--fs-label);
+  text-transform: uppercase;
+  letter-spacing: var(--tk-label);
+  color: var(--dim);
+}
+.net-range-dash { color: var(--dimmer); }
+.net-range input { width: 132px; }
+.net-range input.net-share { width: 320px; flex: 1; min-width: 200px; }
+
+.net-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.net-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-label);
+  text-transform: uppercase;
+  letter-spacing: var(--tk-label);
+  color: var(--dim);
+}
+.net-opt select { font-family: var(--mono); }
+.net-note { font-family: var(--mono); font-size: var(--fs-badge); color: var(--dim); }
+
+.net-warn {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-body);
+  color: var(--frame-active);
+  background: var(--panel2);
+}
+.net-warn[hidden] { display: none; }
+
+.net-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: var(--fs-input); }
+.net-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line2);
+  font-family: var(--font);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tk-label);
+  color: var(--dim);
+  text-align: left;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+.net-table th.num, .net-table td.num { text-align: right; }
+.net-table tbody td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.net-col-path { width: 44%; }
+.net-col-act { width: 92px; }
+.net-table td.path input { width: 100%; }
+
+/* the row being measured right now */
+.net-table tbody tr.is-running td { background: var(--panel2); }
+.net-table tbody tr.is-running td.status { color: var(--frame-active); }
+.net-table td.status { color: var(--dim); font-family: var(--font); font-size: var(--fs-sublabel); white-space: normal; }
+.net-table td.status.bad { color: var(--danger); }
+
+/* the value that answers the question, so it carries the weight */
+.net-table td.read, .net-table td.write { font-weight: var(--fw-bold); }
+.net-table td.slow { color: var(--danger); }
+
+.net-acts { display: flex; gap: 6px; }
+
 /* ---- HTTP ---- */
 .http-bar {
   display: flex;
@@ -656,3 +751,9 @@ tr.is-silent td.silence { color: var(--danger); }
   color: var(--dim);
 }
 .statusbar .hint { font-family: var(--font); color: var(--dimmer); }
+
+.net-col-via { width: 120px; }
+.net-table td.via { color: var(--dim); font-family: var(--mono); }
+.net-table td.via.slow { color: var(--danger); }
+
+.net-note.bad { color: var(--danger); }

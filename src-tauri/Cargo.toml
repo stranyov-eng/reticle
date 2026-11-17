@@ -1,6 +1,6 @@
 [package]
 name = "reticle"
-version = "0.2.0"
+version = "0.3.0"
 description = "Protocol monitor for OSC, MIDI and HTTP"
 authors = ["Iurii Stranev"]
 edition = "2021"
@@ -28,4 +28,5 @@ rosc = "0.11.4"
 reqwest = { version = "0.13.4", features = ["json", "gzip"] }
 if-addrs = "0.15.0"
 tauri-plugin-dialog = "2.7.2"
+base64 = "0.23.1"
 
