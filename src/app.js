@@ -147,6 +147,10 @@ const I18N = {
     netPhaseIdle: 'working…',
     netProgOf: (done, total) => `${done} / ${total} MB`,
     netProgStep: (i, n) => `${i} of ${n}`,
+    netGroupPreset: 'Preset',
+    netGroupTest: 'Measurement',
+    netGroupExpect: 'Expected',
+    netGroupRun: 'Actions',
     netPasses: 'Passes',
     netPassesHint: 'Sweep the whole row this many times, back to back. A fault that moves between sweeps is a different animal from one that sits still, and one pass cannot tell them apart.',
     netByPass: 'per pass',
@@ -2952,7 +2956,8 @@ let appVersion = '';
 invoke('app_version')
   .then((v) => {
     appVersion = v || '';
-    $('appVersion').textContent = appVersion;
+    // Text only — the chip's state dot is a sibling and must survive.
+    $('appVersionText').textContent = appVersion;
   })
   .catch(() => { /* outside the app shell there is no version to show */ });
 renderPresets();

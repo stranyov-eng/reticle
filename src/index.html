@@ -13,7 +13,12 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">RETICLE<span class="version" id="appVersion"></span></div>
+    <div class="topbar-left">
+      <div class="brand">RETICLE</div>
+      <!-- the shared version chip from tools 2.0, not a bespoke one -->
+      <div class="topbar-ver" id="appVersion"><span class="ver-dot"></span><span id="appVersionText"></span></div>
+    </div>
+    <div class="topbar-sep"></div>
 
     <div class="src-strip" id="srcStrip"></div>
 
@@ -32,6 +37,7 @@
 
     <button class="btn" id="pauseBtn" data-i18n="pause" data-i18n-title="pauseHint" title="Freeze the view — capture keeps running">Pause</button>
     <button class="btn" id="resetBtn" data-i18n="reset" data-i18n-title="resetHint" title="Clear all statistics">Reset</button>
+    <div class="topbar-sep"></div>
     <div class="theme-toggle"><span id="themeLabel">Night</span><div class="theme-switch" id="themeSwitch"></div></div>
   </header>
 
@@ -173,13 +179,19 @@
 
   <main class="view" id="view-net">
     <div class="net-bar">
-      <label class="net-opt"><span data-i18n="netPreset">Preset</span>
+      <div class="net-group">
+      <span class="net-group-lbl" data-i18n="netGroupPreset">Preset</span>
+      <!-- no inline label: the group heading above already says Preset -->
+      <label class="net-opt">
         <select id="netPreset"><option value="" data-i18n="netPresetNone">— none —</option></select>
       </label>
       <input type="text" id="netPresetName" class="net-preset-name" data-i18n-placeholder="netPresetNameHint" placeholder="preset name" spellcheck="false" />
       <button class="btn" type="button" id="netPresetSave" data-i18n="netPresetSave">Save</button>
       <button class="btn" type="button" id="netPresetDelete" data-i18n="netPresetDelete">Delete</button>
+      </div>
 
+      <div class="net-group">
+      <span class="net-group-lbl" data-i18n="netGroupTest">Measurement</span>
       <label class="net-opt"><span data-i18n="netSize">Size</span>
         <select id="netSize">
           <option value="128">128 MB</option>
@@ -207,18 +219,6 @@
         </select>
       </label>
 
-      <label class="net-opt"><span data-i18n="netLink">Link</span>
-        <select id="netLink">
-          <option value="1">1 GbE</option>
-          <option value="2.5">2.5 GbE</option>
-          <option value="5">5 GbE</option>
-          <option value="10" selected>10 GbE</option>
-          <option value="25">25 GbE</option>
-          <option value="40">40 GbE</option>
-          <option value="100">100 GbE</option>
-        </select>
-      </label>
-
       <label class="net-opt" data-i18n-title="netPassesHint"><span data-i18n="netPasses">Passes</span>
         <select id="netPasses">
           <option value="1" selected>1</option>
@@ -233,15 +233,33 @@
         <input type="checkbox" id="netBypass" checked />
         <span data-i18n="netBypass">Bypass cache</span>
       </label>
+      </div>
 
+      <div class="net-group">
+      <span class="net-group-lbl" data-i18n="netGroupExpect">Expected</span>
+      <label class="net-opt"><span data-i18n="netLink">Link</span>
+        <select id="netLink">
+          <option value="1">1 GbE</option>
+          <option value="2.5">2.5 GbE</option>
+          <option value="5">5 GbE</option>
+          <option value="10" selected>10 GbE</option>
+          <option value="25">25 GbE</option>
+          <option value="40">40 GbE</option>
+          <option value="100">100 GbE</option>
+        </select>
+      </label>
       <label class="net-opt"><span data-i18n="netExpect">Expect</span>
         <select id="netVia"><option value="" data-i18n="netAnyAdapter">any adapter</option></select>
       </label>
+      </div>
 
+      <div class="net-group">
+      <span class="net-group-lbl" data-i18n="netGroupRun">Actions</span>
       <button class="btn btn-action" type="button" id="netRun" data-i18n="netRun">Run</button>
       <button class="btn" type="button" id="netStop" data-i18n="netStop" disabled>Stop</button>
       <button class="btn" type="button" id="netAdd" data-i18n="netAdd">+ target</button>
       <button class="btn" type="button" id="netExport" data-i18n="netExport">Export report</button>
+      </div>
 
       <div class="grow"></div>
       <span class="net-note" id="netNote"></span>
