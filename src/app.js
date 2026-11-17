@@ -68,6 +68,7 @@ const I18N = {
     netSize: 'Size',
     netThreads: 'Streams',
     netMode: 'Mode',
+    netModeRound: 'Write + read back',
     netModeRead: 'Read',
     netModeWrite: 'Write',
     netModeBoth: 'Read + write',
@@ -98,6 +99,7 @@ const I18N = {
     netStatus: 'status',
     netEmptyTitle: 'No targets yet.',
     netWriteWarning: 'Write mode creates temporary files in each folder and deletes them afterwards.',
+    netRoundWarning: 'Writes temporary files, reads them straight back, then deletes them. Every server is measured against identical files — but the server still holds what was just written in its RAM, so this is the speed of the path, not of the array.',
     netPathHint: '\\\\192.168.2.11\\share\\folder',
     netBrowse: 'Browse',
     netRemove: 'Remove target',
@@ -203,6 +205,10 @@ function applyStaticStrings() {
   for (const el of document.querySelectorAll('[data-i18n-placeholder]')) {
     el.placeholder = t(el.dataset.i18nPlaceholder);
   }
+
+  // Not a static label: which caveat is shown depends on the chosen mode, so it
+  // is re-picked here rather than carrying a data-i18n of its own.
+  paintNetWarn();
 }
 
 /* ---------- state ---------- */
@@ -1149,7 +1155,7 @@ function restoreNetOpts() {
   // option it refers to does not exist yet at this point.
   if (saved.via) restoreNetOpts.pendingVia = saved.via;
 
-  $('netWarn').hidden = $('netMode').value === 'read';
+  paintNetWarn();
 }
 
 function loadNetPresets() {
@@ -1235,7 +1241,7 @@ function applyNetPreset(name) {
   set('netLink', preset.link);
   set('netVia', preset.via);
 
-  $('netWarn').hidden = $('netMode').value === 'read';
+  paintNetWarn();
   applyLinkChoice();
   renderNetTable();
 
@@ -1335,6 +1341,14 @@ function applyLinkChoice() {
     entry.cells.readPct.textContent = result.read_mbps ? fmtOfLink(result.read_mbps) : '';
     entry.cells.writePct.textContent = result.write_mbps ? fmtOfLink(result.write_mbps) : '';
   }
+}
+
+/** The caveat that belongs to the chosen mode — a property of the test, not of
+ *  any one result, so it is said once above the table rather than per row. */
+function paintNetWarn() {
+  const mode = $('netMode').value;
+  $('netWarn').hidden = mode === 'read';
+  $('netWarn').textContent = mode === 'roundtrip' ? t('netRoundWarning') : t('netWriteWarning');
 }
 
 /** Keep the tail of a path, which is the part that identifies it. */
@@ -1742,10 +1756,13 @@ function paintNetProgress(snap) {
   const i = ids.indexOf(snap.id);
   if (i < 0) return;
 
-  // In read+write mode each phase owns half of a target's share of the bar:
+  // Where two phases run, each owns half of a target's share of the bar:
   // otherwise the bar would jump back to zero halfway through every target.
-  const span = mode === 'both' ? 0.5 : 1;
-  const base = mode === 'both' && snap.phase === 'write' ? 0.5 : 0;
+  // Which phase comes second depends on the mode — a round trip writes first.
+  const twoPhase = mode === 'both' || mode === 'roundtrip';
+  const secondPhase = mode === 'roundtrip' ? 'read' : 'write';
+  const span = twoPhase ? 0.5 : 1;
+  const base = twoPhase && snap.phase === secondPhase ? 0.5 : 0;
   const within = snap.total > 0 ? Math.min(1, snap.done / snap.total) : 0;
   const overall = (i + base + within * span) / ids.length;
 
@@ -1859,7 +1876,7 @@ $('netThreads').onchange = () => {
 };
 
 $('netMode').onchange = () => {
-  $('netWarn').hidden = $('netMode').value === 'read';
+  paintNetWarn();
 };
 
 $('netLink').onchange = applyLinkChoice;

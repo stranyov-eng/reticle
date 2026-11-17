@@ -117,6 +117,20 @@ traffic actually left from**.
 
 Deliberate choices:
 
+- **Write, read back, delete — the default.** Nothing has to already exist on
+  the far side, and every server is measured against byte-identical files of
+  the same size. Reading whatever media is already there cannot promise that:
+  it takes the first file large enough that it finds, so two servers can end up
+  compared against different files on different volumes, and a server whose
+  file happens to sit on a slow disk looks like a server with a bad link.
+  The trade is named in the app: data written a second ago is still in the
+  *server's* RAM, and no flag a client can set will make it forget. So this
+  measures the path — NIC, cable, switch, SMB stack — with the array taken out
+  of the picture. For "is this really 10 GbE everywhere" that is the right
+  question, and the disk no longer gets to distort the answer.
+- **Read mode is still there**, because the other question — "why does this
+  copy crawl" — is about real media on a real volume, and only reading that
+  media answers it.
 - **Reads and writes bypass the cache.** Without that, a second pass over the
   same file is served from the client's RAM and reports memory bandwidth —
   6 GB/s over a 10 GbE link, which is nonsense that nevertheless looks like a

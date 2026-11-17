@@ -36,6 +36,10 @@ const TMP_PREFIX: &str = "reticle-speedtest";
 /// SMB port, used for the latency probe.
 const SMB_PORT: u16 = 445;
 
+/// Said when a filesystem refuses unbuffered access, so the figure is known to
+/// be suspect rather than quietly wrong.
+const CACHE_NOTE: &str = "cache could not be bypassed — the figure may be inflated";
+
 /// Sector alignment that unbuffered I/O requires: offsets, lengths and the
 /// buffer address all have to be multiples of this.
 const ALIGN: usize = 4096;
@@ -531,7 +535,7 @@ fn measure_read(
     }
 
     if cached {
-        note = Some("cache could not be bypassed — the figure may be inflated".to_string());
+        note = Some(CACHE_NOTE.to_string());
     }
 
     Ok(Measured {
@@ -543,75 +547,41 @@ fn measure_read(
     })
 }
 
-/// Write `size` bytes as `threads` temporary files, then delete them.
-///
-/// Every file is flushed and synced before the clock stops: without that the
-/// number would describe the client's write cache, not the server.
-fn measure_write(
-    dir: &Path,
-    size: u64,
-    threads: usize,
-    cancel: &Arc<AtomicBool>,
-    progress: &Arc<Progress>,
+/// Volume per stream, trimmed to whole blocks as unbuffered I/O demands.
+fn per_stream(size: u64, threads: usize) -> u64 {
+    let raw = (size / threads as u64).max(BLOCK as u64);
+    (raw - (raw % BLOCK as u64)).max(BLOCK as u64)
+}
+
+/// Where a write test puts its files: one per stream, so the streams never
+/// contend for the same file handle.
+fn tmp_paths(dir: &Path, threads: usize) -> Vec<PathBuf> {
+    (0..threads)
+        .map(|i| dir.join(format!("{TMP_PREFIX}-{i}.tmp")))
+        .collect()
+}
+
+/// Remove whatever a write left behind, success or failure: leftovers in a show
+/// folder are worse than a missing measurement.
+fn sweep(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Join every stream, add up what each moved and stop the clock once the last
+/// one is done — not when the first one is.
+fn collect(
+    handles: Vec<std::thread::JoinHandle<Result<(u64, bool), String>>>,
+    started: Instant,
+    what: &str,
 ) -> Result<Measured, String> {
-    let threads = threads.max(1);
-    // Whole blocks only, as unbuffered writes demand.
-    let per_thread = {
-        let raw = (size / threads as u64).max(BLOCK as u64);
-        raw - (raw % BLOCK as u64)
-    }
-    .max(BLOCK as u64);
-
-    progress.begin(PHASE_WRITE, per_thread * threads as u64);
-
-    let started = Instant::now();
-    let mut handles = Vec::with_capacity(threads);
-
-    for i in 0..threads {
-        let path = dir.join(format!("{TMP_PREFIX}-{i}.tmp"));
-        let cancel = cancel.clone();
-        let progress = progress.clone();
-
-        handles.push(std::thread::spawn(move || -> (Result<(u64, bool), String>, PathBuf) {
-            let run = || -> Result<(u64, bool), String> {
-                let (mut f, unbuffered) = create_write(&path).map_err(|e| e.to_string())?;
-
-                // Incompressible: some arrays and some SMB setups compress in
-                // flight, and a buffer of zeroes would measure the compressor.
-                // Built per thread so the streams do not share one page.
-                let mut buf = AlignedBuf::new(BLOCK);
-                buf.fill_incompressible();
-
-                let mut done: u64 = 0;
-                while done < per_thread {
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    f.write_all(buf.as_mut()).map_err(|e| e.to_string())?;
-                    done += BLOCK as u64;
-                    progress.add(BLOCK as u64);
-                }
-
-                f.flush().map_err(|e| e.to_string())?;
-                f.sync_all().map_err(|e| e.to_string())?;
-                Ok((done, unbuffered))
-            };
-
-            let outcome = run();
-            (outcome, path)
-        }));
-    }
-
     let mut bytes = 0u64;
-    let mut failure: Option<String> = None;
     let mut cached = false;
+    let mut failure: Option<String> = None;
 
-    for h in handles {
-        let (outcome, path) = h.join().map_err(|_| "write thread panicked".to_string())?;
-        // Clean up whatever was created, including after a failure: leftovers
-        // in a show folder are worse than a missing measurement.
-        let _ = fs::remove_file(&path);
-        match outcome {
+    for handle in handles {
+        match handle.join().map_err(|_| format!("{what} thread panicked"))? {
             Ok((n, unbuffered)) => {
                 bytes += n;
                 if !unbuffered {
@@ -624,17 +594,171 @@ fn measure_write(
         }
     }
 
+    let seconds = started.elapsed().as_secs_f64();
+
     if let Some(e) = failure {
         return Err(e);
     }
 
     Ok(Measured {
         bytes,
-        seconds: started.elapsed().as_secs_f64(),
-        note: cached.then(|| "cache could not be bypassed — the figure may be inflated".to_string()),
+        seconds,
+        note: cached.then(|| CACHE_NOTE.to_string()),
         file: None,
         file_bytes: 0,
     })
+}
+
+/// Write `per_thread` bytes to each path and leave the files in place: the
+/// caller decides whether to read them back before sweeping them.
+///
+/// Every file is flushed and synced before the clock stops: without that the
+/// number would describe the client's write cache, not the server.
+fn write_streams(
+    paths: &[PathBuf],
+    per_thread: u64,
+    cancel: &Arc<AtomicBool>,
+    progress: &Arc<Progress>,
+) -> Result<Measured, String> {
+    progress.begin(PHASE_WRITE, per_thread * paths.len() as u64);
+
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        let path = path.clone();
+        let cancel = cancel.clone();
+        let progress = progress.clone();
+
+        handles.push(std::thread::spawn(move || -> Result<(u64, bool), String> {
+            let (mut f, unbuffered) = create_write(&path).map_err(|e| e.to_string())?;
+
+            // Incompressible: some arrays and some SMB setups compress in
+            // flight, and a buffer of zeroes would measure the compressor.
+            // Built per thread so the streams do not share one page.
+            let mut buf = AlignedBuf::new(BLOCK);
+            buf.fill_incompressible();
+
+            let mut done: u64 = 0;
+            while done < per_thread {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                f.write_all(buf.as_mut()).map_err(|e| e.to_string())?;
+                done += BLOCK as u64;
+                progress.add(BLOCK as u64);
+            }
+
+            f.flush().map_err(|e| e.to_string())?;
+            f.sync_all().map_err(|e| e.to_string())?;
+            Ok((done, unbuffered))
+        }));
+    }
+
+    collect(handles, started, "write")
+}
+
+/// Read the given files back, one stream per file.
+fn read_streams(
+    paths: &[PathBuf],
+    per_thread: u64,
+    cancel: &Arc<AtomicBool>,
+    progress: &Arc<Progress>,
+) -> Result<Measured, String> {
+    progress.begin(PHASE_READ, per_thread * paths.len() as u64);
+
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        let path = path.clone();
+        let cancel = cancel.clone();
+        let progress = progress.clone();
+
+        handles.push(std::thread::spawn(move || -> Result<(u64, bool), String> {
+            let (mut f, unbuffered) = open_read(&path).map_err(|e| e.to_string())?;
+            let mut buf = AlignedBuf::new(BLOCK);
+            let mut done: u64 = 0;
+
+            while done < per_thread {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                match f.read(buf.as_mut()) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        done += n as u64;
+                        progress.add(n as u64);
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+
+            Ok((done, unbuffered))
+        }));
+    }
+
+    collect(handles, started, "read")
+}
+
+/// Write `size` bytes as `threads` temporary files, then delete them.
+fn measure_write(
+    dir: &Path,
+    size: u64,
+    threads: usize,
+    cancel: &Arc<AtomicBool>,
+    progress: &Arc<Progress>,
+) -> Result<Measured, String> {
+    let threads = threads.max(1);
+    let paths = tmp_paths(dir, threads);
+    let out = write_streams(&paths, per_stream(size, threads), cancel, progress);
+    sweep(&paths);
+    out
+}
+
+/// Write temporary files, read them straight back, then delete them.
+///
+/// Self-contained, which is the point: nothing has to already exist on the far
+/// side, and every server is measured against byte-identical files of the same
+/// size. The read test on real media can promise none of that — it takes the
+/// first file large enough that it finds, so two servers can end up compared
+/// against entirely different files on entirely different volumes.
+///
+/// What it measures is the **path** — NIC, cable, switch, SMB stack — and not
+/// the array: data written a second ago is still in the server's own RAM, and
+/// no flag a client can set will make the server forget it. For "is this really
+/// 10 GbE everywhere" that is the right trade, and arguably the better test,
+/// because the disk stops being a variable. For "why does this copy crawl" it
+/// is the wrong one, and the read test on real media answers that instead.
+fn measure_roundtrip(
+    dir: &Path,
+    size: u64,
+    threads: usize,
+    cancel: &Arc<AtomicBool>,
+    progress: &Arc<Progress>,
+) -> Result<(Measured, Measured), String> {
+    let threads = threads.max(1);
+    let per_thread = per_stream(size, threads);
+    let paths = tmp_paths(dir, threads);
+
+    let write = match write_streams(&paths, per_thread, cancel, progress) {
+        Ok(w) => w,
+        Err(e) => {
+            sweep(&paths);
+            return Err(e);
+        }
+    };
+
+    let read = read_streams(&paths, per_thread, cancel, progress);
+    sweep(&paths);
+
+    let mut read = read?;
+    // Named so the file column does not sit empty, and so it is obvious at a
+    // glance that this figure did not come from the show's own media.
+    read.file = Some(format!("{TMP_PREFIX}-*.tmp"));
+    read.file_bytes = per_thread;
+
+    Ok((write, read))
 }
 
 /// Run one target. Cheap checks first, so an unreachable share fails in
@@ -664,6 +788,24 @@ pub fn run_target(
 
     let size = opts.size_mb.clamp(16, 16 * 1024) * 1024 * 1024;
     let threads = opts.threads.clamp(1, 32);
+    // The round trip is its own thing: it writes and reads the same files, so
+    // it cannot be assembled out of the other two.
+    if opts.mode == "roundtrip" {
+        match measure_roundtrip(&dir, size, threads, cancel, progress) {
+            Ok((write, read)) => {
+                out.write_mbps = Some(mbps(&write));
+                out.write_bytes = write.bytes;
+                out.read_mbps = Some(mbps(&read));
+                out.read_bytes = read.bytes;
+                out.read_file = read.file;
+                out.read_file_bytes = read.file_bytes;
+                out.note = read.note.or(write.note);
+            }
+            Err(e) => out.error = Some(e),
+        }
+        return out;
+    }
+
     let wants_read = opts.mode != "write";
     let wants_write = opts.mode == "write" || opts.mode == "both";
 
@@ -828,6 +970,48 @@ mod tests {
         assert_eq!(m.file_bytes, 24 * 1024 * 1024);
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    /// Write, read the same bytes back, and leave nothing behind. The sweep
+    /// matters most: these files land in someone's show folder.
+    #[test]
+    fn round_trip_measures_both_and_cleans_up() {
+        let dir = std::env::temp_dir().join("reticle-netspeed-roundtrip");
+        fs::create_dir_all(&dir).unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let size = 16 * 1024 * 1024;
+        let (write, read) = measure_roundtrip(&dir, size, 2, &cancel, &prog()).expect("round trip should work");
+
+        // Read back exactly what was written — not a byte less, which is the
+        // whole point of reading the file this test just created.
+        assert_eq!(write.bytes, read.bytes);
+        assert!(write.bytes >= size, "{} bytes written", write.bytes);
+        assert!(mbps(&write) > 0.0 && mbps(&read) > 0.0);
+
+        // Named, so the file column says where the figure came from.
+        assert!(read.file.expect("the read should name its source").contains(TMP_PREFIX));
+
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A failed write must not leave its files in the target folder either.
+    #[test]
+    fn round_trip_sweeps_after_a_failure() {
+        let missing = std::env::temp_dir().join("reticle-netspeed-absent-folder");
+        fs::remove_dir_all(&missing).ok();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let err = measure_roundtrip(&missing, 16 * 1024 * 1024, 2, &cancel, &prog()).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(!missing.exists(), "a failed run should not create the folder");
     }
 
     /// The progress counters must reach the volume actually moved, or the bar

@@ -200,6 +200,7 @@
       </label>
       <label class="net-opt"><span data-i18n="netMode">Mode</span>
         <select id="netMode">
+          <option value="roundtrip" data-i18n="netModeRound">Write + read back</option>
           <option value="read" data-i18n="netModeRead">Read</option>
           <option value="write" data-i18n="netModeWrite">Write</option>
           <option value="both" data-i18n="netModeBoth">Read + write</option>
@@ -236,7 +237,8 @@
       <span class="net-prog-text" id="netProgText"></span>
     </div>
 
-    <div class="net-warn" id="netWarn" hidden data-i18n="netWriteWarning">
+    <!-- Text set by paintNetWarn, which picks the caveat for the chosen mode. -->
+    <div class="net-warn" id="netWarn" hidden>
       Write mode creates temporary files in each folder and deletes them afterwards.
     </div>
 
