@@ -172,6 +172,10 @@
           blurb: 'Renders the table to PNG carrying the test parameters — size, streams, mode, link, the app version and the timestamp — plus the findings in full. A throughput figure without the conditions that produced it is not a measurement, and a report that travels to someone who was not standing there needs to say what it means.'
         },
         {
+          title: 'Where the presets actually live',
+          blurb: 'In a file this app owns — settings.json, in its own folder under AppData\\Roaming — and not in the webview. A webview keeps its storage inside a browser profile, which is a cache directory by nature: an uninstall that offers to delete application data is entitled to take it, a cleanup tool will, no backup ever sees it, and it cannot be carried to another machine. The file is written beside itself and renamed over, so a kill halfway through a save leaves the old settings rather than half of the new ones. Copy it to another machine and that machine knows your venues.'
+        },
+        {
           title: 'Presets per venue',
           blurb: 'A preset stores the targets and the settings they were measured with, because comparing today\'s figure with last month\'s only means something if the test was the same. The app opens on the last preset used.'
         }

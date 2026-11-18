@@ -358,8 +358,8 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
-  <script src="_help.js"></script>
-  <script src="_guide.js"></script>
+  <!-- Reads the settings file, fills localStorage from it, and only then
+       loads app.js, _help.js and _guide.js. See _store.js. -->
+  <script src="_store.js"></script>
 </body>
 </html>

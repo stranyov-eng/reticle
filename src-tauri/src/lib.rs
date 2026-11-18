@@ -22,6 +22,7 @@ mod sources;
 mod stats;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -187,8 +188,6 @@ struct Interface {
     ip: String,
 }
 
-/// Network interfaces of the machine — for the dropdown when adding a source.
-///
 /// Which build is running.
 ///
 /// Taken from `Cargo.toml` at compile time, so it cannot drift from the
@@ -197,6 +196,54 @@ struct Interface {
 #[tauri::command]
 fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// Where settings live — a file this app owns.
+///
+/// The interface keeps presets, targets and options in `localStorage`, which
+/// is quick and synchronous and exactly right as a cache. It is also a folder
+/// inside WebView2's browser profile: a cache directory by nature, taken by an
+/// uninstall that ticks "delete application data", never seen by a backup,
+/// impossible to carry to another machine, and keyed by origin — so a build
+/// run from the dev server keeps a second, invisible set of the same presets.
+/// A venue's nine paths are worth more than that.
+fn settings_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("no config folder: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir.join("settings.json"))
+}
+
+/// The stored settings as written, or `None` on the first run.
+#[tauri::command]
+fn load_settings(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = settings_file(&app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// Written beside the real file and renamed over it.
+///
+/// A rename within one folder is atomic, so a crash or a kill halfway through
+/// a save leaves either the old settings or the new ones — never a truncated
+/// file where a venue's presets used to be.
+#[tauri::command]
+fn save_settings(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    let path = settings_file(&app)?;
+    let tmp = path.with_extension("json.part");
+    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Where that file is, so the guide can say it and a person can copy it.
+#[tauri::command]
+fn settings_path(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(settings_file(&app)?.display().to_string())
 }
 
 /// On site a machine usually has several adapters, and the multicast
@@ -566,6 +613,9 @@ pub fn run() {
             sparks,
             dmx_frame,
             app_version,
+            load_settings,
+            save_settings,
+            settings_path,
             list_interfaces,
             save_text,
             open_text,

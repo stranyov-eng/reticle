@@ -354,6 +354,47 @@ await $(() => { const x = document.querySelector('.src-chip button'); if (x) x.c
 await wait(600);
 ok('sources: a chip can be closed', await $(() => document.querySelectorAll('.src-chip').length === 1));
 
+/* ---------- settings outlive the webview's profile ---------- */
+//
+// Last, because it reloads the page. A preset is saved, localStorage is wiped
+// the way an uninstall or a cleanup tool wipes it, and the preset has to come
+// back from the settings file — which is the whole reason that file exists.
+
+await $(() => [...document.querySelectorAll('.tab')].find((x) => x.textContent.trim().toLowerCase() === 'network').click());
+await wait(200);
+await $(() => {
+  document.getElementById('netSharePath').value = 'share/objects';
+  document.getElementById('netFrom').value = '10.0.0.1';
+  document.getElementById('netTo').value = '10.0.0.3';
+  document.getElementById('netAddRange').click();
+});
+await wait(400);
+await $(() => {
+  document.getElementById('netPresetName').value = 'survives a wipe';
+  document.getElementById('netPresetSave').click();
+});
+await wait(600);
+
+const beforeWipe = await $(() => [...document.querySelectorAll('#netPreset option')].map((o) => o.value));
+ok('settings: the preset is there before the wipe', beforeWipe.includes('survives a wipe'), beforeWipe.join(','));
+
+await $(() => localStorage.clear());
+await page.reload();
+await wait(1500);
+
+const afterWipe = await $(() => ({
+  options: [...document.querySelectorAll('#netPreset option')].map((o) => o.value),
+  // Read back raw, not through the picker: a key app.js writes for itself on
+  // startup would make a count pass without anything having been restored.
+  presets: localStorage.getItem('reticle-net-presets') || '',
+}));
+ok(
+  'settings: a wiped profile is refilled from the file',
+  afterWipe.presets.includes('survives a wipe'),
+  afterWipe.presets.slice(0, 80),
+);
+ok('settings: the preset came back', afterWipe.options.includes('survives a wipe'), afterWipe.options.join(','));
+
 /* ---------- nothing may have thrown ---------- */
 
 ok('no uncaught errors anywhere in the run', errors.length === 0, errors.slice(0, 4).join(' | '));

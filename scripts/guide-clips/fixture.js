@@ -197,8 +197,10 @@
     }, 33);
   }
 
+  const SETTINGS_SLOT = 'fixture-settings-file';
+
   const COMMANDS = {
-    app_version: () => '0.12.2',
+    app_version: () => '0.13.0',
     list_interfaces: () => ADAPTERS,
     list_sources: () => SOURCES,
     sparks: ({ requests }) => (requests || []).map((r, i) =>
@@ -243,6 +245,12 @@
         content_type: 'application/json', size: body.length, truncated: false, ms: 14,
       };
     },
+    // The settings file, stood in for by one slot of sessionStorage. The real
+    // one exists because it outlives the webview's profile; this one outlives
+    // localStorage being cleared and a reload, which is the part worth testing.
+    load_settings: () => { try { return sessionStorage.getItem(SETTINGS_SLOT); } catch (e) { return null; } },
+    save_settings: ({ text }) => { try { sessionStorage.setItem(SETTINGS_SLOT, text); } catch (e) {} return null; },
+    settings_path: () => 'C:/Users/demo/AppData/Roaming/pro.stranyov.reticle/settings.json',
     pick_folder: () => null,
     save_text: () => null,
     save_binary: () => null,
