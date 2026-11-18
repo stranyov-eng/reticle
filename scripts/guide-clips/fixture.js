@@ -198,7 +198,7 @@
   }
 
   const COMMANDS = {
-    app_version: () => '0.12.1',
+    app_version: () => '0.12.2',
     list_interfaces: () => ADAPTERS,
     list_sources: () => SOURCES,
     sparks: ({ requests }) => (requests || []).map((r, i) =>

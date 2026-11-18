@@ -164,6 +164,10 @@
           blurb: 'Detected by connecting a UDP socket to the target and reading back the source address the kernel chose — no packet is sent, but the routing decision is the same one SMB will make. An application cannot choose the adapter, Windows decides by routing metric, but it can tell you when the wrong one was used. On a machine with a 10 GbE card beside a gigabit dongle that is an easy and invisible mistake.'
         },
         {
+          title: 'A target that is not there',
+          blurb: 'The port is asked first, and a host that does not answer on 445 is not then asked for its folder: Windows\' own SMB client spends twenty seconds on that question before conceding that the host it just failed to reach is still not there. An unreachable row therefore costs three seconds and says which of the two it was — no answer on the port, or an answer and no such folder. Stop is heard throughout, because the waiting is done somewhere it can be abandoned rather than inside a call that cannot be interrupted. A target stopped mid-transfer reports nothing at all: its streams leave the loop early, so the bytes and the clock both stop early and the division still yields a perfectly plausible number.'
+        },
+        {
           title: 'Export report',
           blurb: 'Renders the table to PNG carrying the test parameters — size, streams, mode, link, the app version and the timestamp — plus the findings in full. A throughput figure without the conditions that produced it is not a measurement, and a report that travels to someone who was not standing there needs to say what it means.'
         },
