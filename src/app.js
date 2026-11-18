@@ -121,6 +121,8 @@ const I18N = {
     netMeasuring: 'measuring…',
     netDone: (n) => `${n} measured`,
     netCancelled: 'stopped',
+    netStopping: 'stopping…',
+    netNotMeasured: 'not measured',
     netFile: 'file read',
     netBypass: 'Bypass cache',
     netBypassHint: 'Ask for unbuffered I/O. On SMB 3.0.2 and later this travels to the server, which then skips its own cache too — so the figure includes the far side\'s disk. Run the same test with it off and the pair of numbers separates a slow link from a slow array.',
@@ -1111,6 +1113,11 @@ const SLOW_RATIO = 0.7;
 let netTargets = [];
 let netNextId = 1;
 let netBusy = false;
+
+// Stop is a request, not a switch. The run can be inside a blocking connect to
+// a host that is not there, and the backend answers when that call returns —
+// so the interface has to say "asked, waiting" rather than look ignored.
+let netStopping = false;
 const netRows = new Map();      // id -> { tr, cells }
 const netResults = new Map();   // id -> last result
 
@@ -2153,7 +2160,7 @@ function netPhaseLabel(phase) {
 }
 
 function paintNetProgress(snap) {
-  if (!netRunState) return;
+  if (!netRunState || netStopping) return;
 
   const { ids, mode, done } = netRunState;
   const i = ids.indexOf(snap.id);
@@ -2229,6 +2236,7 @@ async function runNetTest() {
   if (!targets.length || netBusy) return;
 
   netBusy = true;
+  netStopping = false;
   $('netRun').disabled = true;
   $('netStop').disabled = false;
 
@@ -2264,10 +2272,25 @@ async function runNetTest() {
     completed = pass;
   }
 
+  // Read before endNetProgress clears the run state: the rows a stopped run
+  // never reached are still wearing "queued", which reads as "running".
+  const measured = netRunState ? netRunState.done : new Set();
+  const planned = netRunState ? netRunState.ids : [];
+
   netBusy = false;
+  netStopping = false;
   $('netRun').disabled = false;
   $('netStop').disabled = true;
   endNetProgress();
+
+  for (const id of planned) {
+    const entry = netRows.get(id);
+    if (!entry || measured.has(id)) continue;
+    entry.tr.classList.remove('is-running');
+    entry.cells.status.classList.remove('bad');
+    entry.cells.status.textContent = t('netNotMeasured');
+    entry.cells.status.title = '';
+  }
   $('netNote').textContent = completed < passes
     ? t('netCancelled')
     : t('netDonePasses', netResults.size, completed);
@@ -2301,7 +2324,25 @@ listen('nettest-done', (e) => {
 });
 
 $('netRun').onclick = runNetTest;
-$('netStop').onclick = () => invoke('net_test_cancel');
+/** Ask the run to stop, and show that it was asked. */
+function requestNetStop() {
+  if (!netBusy || netStopping) return;
+  netStopping = true;
+  $('netStop').disabled = true;
+  $('netProgText').textContent = t('netStopping');
+
+  // The target in flight is still finishing; the ones behind it never will.
+  for (const [id, entry] of netRows) {
+    if (netRunState && netRunState.done.has(id)) continue;
+    entry.cells.status.textContent = entry.tr.classList.contains('is-running')
+      ? t('netStopping')
+      : '';
+  }
+
+  invoke('net_test_cancel');
+}
+
+$('netStop').onclick = requestNetStop;
 $('netAdd').onclick = () => addNetTarget();
 $('netAddFirst').onclick = () => addNetTarget();
 $('netAddRange').onclick = addNetRange;

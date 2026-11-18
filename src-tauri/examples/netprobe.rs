@@ -69,7 +69,9 @@ fn main() {
             };
 
             progress.enter(target.id);
-            let r = netspeed::run_target(&target, &opts, &cancel, &progress);
+            let Some(r) = netspeed::run_target(&target, &opts, &cancel, &progress) else {
+                continue;
+            };
 
             let host = netspeed::host_of(path).unwrap_or_else(|| path.clone());
             let show = |v: Option<f64>| match v {

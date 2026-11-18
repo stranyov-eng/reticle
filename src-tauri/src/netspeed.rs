@@ -868,29 +868,117 @@ fn measure_roundtrip(
     Ok((write, read))
 }
 
+/// What the reachability probe found, carried back from its own thread.
+#[derive(Default)]
+struct Probe {
+    host_name: Option<String>,
+    latency_ms: Option<f64>,
+    via_ip: Option<String>,
+    via_adapter: Option<String>,
+    /// The host answered on the file-sharing port — or there was no host to
+    /// ask, the path being a local or already-mapped one.
+    answered: bool,
+    /// The folder is there. Only ever asked when the host answered.
+    is_dir: bool,
+}
+
+/// Wait for blocking work on a thread of its own, giving up the moment the run
+/// is cancelled.
+///
+/// Reaching a host that is not there is the one part of a run that cannot be
+/// cut into cancellable steps: a TCP connect, a reverse lookup and a stat of a
+/// UNC path are each a single blocking call inside the kernel, and nothing
+/// short of its own timeout returns from one. Doing that work here makes Stop
+/// a no-op for as long as it takes — which is exactly how it behaved. Waiting
+/// on a channel instead leaves the wait interruptible. The abandoned thread
+/// finishes into a dropped receiver and ends on its own.
+fn interruptible<T, F>(cancel: &Arc<AtomicBool>, work: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    use std::sync::mpsc::RecvTimeoutError;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(v) => return Some(v),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+}
+
+/// Everything that has to touch the network before measuring can start.
+///
+/// Ordered so the cheap answer comes first: a host that does not answer on 445
+/// has no share to reach, and asking the filesystem anyway only spends the SMB
+/// client's own timeout on top of the one already spent.
+fn probe_target(path: &str, dir: &Path) -> Probe {
+    let mut p = Probe::default();
+
+    match host_of(path) {
+        Some(host) => {
+            p.latency_ms = latency(&host);
+            p.answered = p.latency_ms.is_some();
+            // Worth having even for a host that did not answer: which adapter
+            // the attempt left from is half the diagnosis.
+            if let Some((ip, adapter)) = route_via(&host) {
+                p.via_ip = Some(ip);
+                p.via_adapter = adapter;
+            }
+            if p.answered {
+                p.host_name = host_name(&host);
+            }
+        }
+        // A drive letter or a local folder: nothing to gate on.
+        None => p.answered = true,
+    }
+
+    p.is_dir = p.answered && dir.is_dir();
+    p
+}
+
 /// Run one target. Cheap checks first, so an unreachable share fails in
 /// milliseconds instead of after a timeout on a large read.
+///
+/// `None` means the run was stopped partway: no result is better than a figure
+/// taken from an interrupted transfer.
 pub fn run_target(
     target: &Target,
     opts: &TestOpts,
     cancel: &Arc<AtomicBool>,
     progress: &Arc<Progress>,
-) -> TargetResult {
+) -> Option<TargetResult> {
     let mut out = TargetResult::blank(target);
     let dir = PathBuf::from(&target.path);
 
-    if let Some(host) = host_of(&target.path) {
-        out.host_name = host_name(&host);
-        out.latency_ms = latency(&host);
-        if let Some((ip, adapter)) = route_via(&host) {
-            out.via_ip = Some(ip);
-            out.via_adapter = adapter;
-        }
+    let probe = {
+        let path = target.path.clone();
+        let dir = dir.clone();
+        interruptible(cancel, move || probe_target(&path, &dir))?
+    };
+
+    out.host_name = probe.host_name;
+    out.latency_ms = probe.latency_ms;
+    out.via_ip = probe.via_ip;
+    out.via_adapter = probe.via_adapter;
+
+    if !probe.answered {
+        out.error = Some(format!("host did not answer on port {SMB_PORT}"));
+        return Some(out);
     }
 
-    if !dir.is_dir() {
+    if !probe.is_dir {
         out.error = Some("folder is not reachable".to_string());
-        return out;
+        return Some(out);
     }
 
     let size = opts.size_mb.clamp(16, 16 * 1024) * 1024 * 1024;
@@ -913,7 +1001,7 @@ pub fn run_target(
             }
             Err(e) => out.error = Some(e),
         }
-        return out;
+        return finish_target(out, cancel);
     }
 
     let wants_read = opts.mode != "write";
@@ -950,7 +1038,21 @@ pub fn run_target(
         }
     }
 
-    out
+    finish_target(out, cancel)
+}
+
+/// Withhold the result of a target that was stopped mid-measurement.
+///
+/// The worker threads break out of their loop when cancelled, so the bytes and
+/// the clock both stop early and the division still yields a number — a
+/// plausible one, which is the dangerous kind. A stopped target reports
+/// nothing at all.
+fn finish_target(out: TargetResult, cancel: &Arc<AtomicBool>) -> Option<TargetResult> {
+    if cancel.load(Ordering::Relaxed) {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 #[cfg(test)]
@@ -1218,4 +1320,66 @@ mod tests {
 
         fs::remove_dir_all(&dir).ok();
     }
+    /// Stop used to be a no-op against a host that is not there: the run sat
+    /// inside a blocking connect and a blocking stat, neither of which looks at
+    /// the flag. The wait is on a channel now, so the answer comes back in a
+    /// tick regardless of what the kernel is still waiting for.
+    #[test]
+    fn a_stopped_run_gives_up_at_once() {
+        let target = Target {
+            id: 1,
+            // TEST-NET-1: reserved for documentation, routed nowhere.
+            path: r"\\192.0.2.1\share".to_string(),
+            label: None,
+        };
+        let opts = TestOpts {
+            size_mb: 64,
+            threads: 4,
+            mode: "read".to_string(),
+            bypass_cache: true,
+        };
+        let cancel = Arc::new(AtomicBool::new(true));
+
+        let started = Instant::now();
+        let out = run_target(&target, &opts, &cancel, &prog());
+
+        assert!(out.is_none(), "a stopped target must report nothing");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "stopping took {:?}, which is a hang by any other name",
+            started.elapsed()
+        );
+    }
+
+    /// A host that does not answer on 445 has no share to reach, and the
+    /// filesystem must not be asked anyway: that stat is the long one.
+    #[test]
+    fn an_unreachable_host_says_so_without_waiting_on_smb() {
+        let target = Target {
+            id: 1,
+            path: r"\\192.0.2.1\share".to_string(),
+            label: None,
+        };
+        let opts = TestOpts {
+            size_mb: 64,
+            threads: 4,
+            mode: "read".to_string(),
+            bypass_cache: true,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let started = Instant::now();
+        let out = run_target(&target, &opts, &cancel, &prog()).expect("not stopped, so a result");
+
+        let err = out.error.expect("an unreachable host is an error");
+        assert!(err.contains("445"), "the reason should name the port: {err}");
+        // The connect itself is allowed three seconds; the SMB client's own
+        // timeout on top of that is what this guards against.
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "took {:?} to give up on a host that is not there",
+            started.elapsed()
+        );
+    }
+
 }

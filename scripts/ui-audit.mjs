@@ -308,11 +308,32 @@ await $(() => document.getElementById('netPresetDelete').click());
 await wait(300);
 
 // Stopping a run part way.
+//
+// The press and the reading happen in one evaluate, so what is checked is the
+// state the button leaves behind rather than whatever the run reached next.
 await $(() => document.getElementById('netRun').click());
 await wait(900);
-await $(() => document.getElementById('netStop').click());
+const stopping = await $(() => {
+  document.getElementById('netStop').click();
+  return {
+    disabled: document.getElementById('netStop').disabled,
+    text: document.getElementById('netProgText').textContent,
+  };
+});
+ok('network: Stop says it was asked', stopping.disabled && /stopping/i.test(stopping.text), stopping.text);
+
 await page.waitForFunction(() => !document.getElementById('netRun').disabled, { timeout: 30000 });
 ok('network: Stop ends the run', await $(() => document.getElementById('netProg').hidden));
+ok(
+  'network: a stopped run leaves no row claiming to be busy',
+  await $(() => ![...document.querySelectorAll('.net-table tbody tr')]
+    .some((tr) => tr.classList.contains('is-running') || /queued|measuring/i.test(tr.textContent))),
+);
+ok(
+  'network: the targets it never reached say so',
+  await $(() => [...document.querySelectorAll('.net-table tbody tr')]
+    .some((tr) => /not measured/i.test(tr.textContent))),
+);
 
 // Pause, reset, and removing a source.
 await $(() => [...document.querySelectorAll('.tab')].find((x) => x.textContent.trim().toLowerCase() === 'addresses').click());

@@ -40,6 +40,10 @@
     { name: 'Loopback', ip: '127.0.0.1' },
   ];
 
+  // Honoured the way the real backend honours it: between targets and
+  // between steps. A fixture that ignored Stop would let a broken Stop pass.
+  let cancelled = false;
+
   /** One sweep of the row, paced so a clip can watch it rather than blink. */
   async function runTest(targets, opts) {
     const total = Number(opts.size_mb) * 1024 * 1024;
@@ -48,6 +52,7 @@
       : [opts.mode];
 
     for (let i = 0; i < targets.length; i++) {
+      if (cancelled) break;
       const target = targets[i];
       const [name, latency, read, write] = SERVERS[i % SERVERS.length];
 
@@ -60,10 +65,15 @@
       // waited that out would be a clip nobody watches.
       for (const phase of phases) {
         for (let step = 1; step <= 4; step++) {
+          if (cancelled) break;
           emit('nettest-progress', { id: target.id, phase, done: (total / 4) * step, total });
           await wait(60);
         }
       }
+
+      // A stopped target reports nothing: a part-measured figure is not a
+      // measurement, and the real backend withholds it for that reason.
+      if (cancelled) break;
 
       emit('nettest-result', {
         id: target.id,
@@ -87,7 +97,7 @@
       await wait(80);
     }
 
-    emit('nettest-done', false);
+    emit('nettest-done', cancelled);
   }
 
   /* ---------- live traffic ----------
@@ -188,7 +198,7 @@
   }
 
   const COMMANDS = {
-    app_version: () => '0.12.0',
+    app_version: () => '0.12.1',
     list_interfaces: () => ADAPTERS,
     list_sources: () => SOURCES,
     sparks: ({ requests }) => (requests || []).map((r, i) =>
@@ -239,7 +249,7 @@
     open_text: () => null,
     reset_stats: () => null,
     set_paused: () => null,
-    net_test_cancel: () => null,
+    net_test_cancel: () => { cancelled = true; return null; },
     // Names are what people call these boxes; the guide should show them, not
     // a column of raw addresses.
     resolve_hosts: ({ hosts }) => hosts.map((h) => {
@@ -247,7 +257,7 @@
       const row = SERVERS[last - 11];
       return row ? row[0] : null;
     }),
-    net_test: ({ targets, opts }) => { runTest(targets, opts); return null; },
+    net_test: ({ targets, opts }) => { cancelled = false; runTest(targets, opts); return null; },
   };
 
   window.__TAURI__ = {

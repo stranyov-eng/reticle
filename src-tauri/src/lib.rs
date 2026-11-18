@@ -418,8 +418,11 @@ async fn net_test(
             }
             progress.enter(target.id);
             let _ = app.emit("nettest-start", target.id);
-            let result = netspeed::run_target(&target, &opts, &cancel, &progress);
-            let _ = app.emit("nettest-result", result);
+            // Nothing is emitted for a target the user stopped: a part-measured
+            // figure is not a measurement, and the row says so by staying empty.
+            if let Some(result) = netspeed::run_target(&target, &opts, &cancel, &progress) {
+                let _ = app.emit("nettest-result", result);
+            }
         }
 
         progress.finish();
